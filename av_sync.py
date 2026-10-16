@@ -50,9 +50,10 @@ class Config:
     backfill_n: int
 
 
-def load_config(need_wp: bool) -> Config:
-    env = os.environ.get
-    missing = [k for k in ("DMM_API_ID", "DMM_AFFILIATE_ID") if not env(k)]
+def load_config(need_wp: bool, need_dmm: bool = True) -> Config:
+    # Secrets の貼り付け時に混ざりやすい前後の空白・改行は除去する
+    env = lambda k, d="": os.environ.get(k, d).strip()  # noqa: E731
+    missing = [k for k in ("DMM_API_ID", "DMM_AFFILIATE_ID") if need_dmm and not env(k)]
     if need_wp:
         missing += [k for k in ("WP_URL", "WP_USERNAME", "WP_APP_PASSWORD") if not env(k)]
     if missing:
@@ -254,6 +255,87 @@ def send_items(wp: WpClient, items: list[Item]) -> tuple[int, int]:
     return ok, failed
 
 
+# ---------------------------------------------------------------- 診断 ----
+
+def classify_auth(status: int, whoami: dict[str, Any] | None) -> str:
+    """認証テストの結果から、失敗の原因を日本語で説明する。
+
+    whoami は AVハブの /av/v1/whoami の応答。
+      auth_header: 認証ヘッダーがサーバーのPHPまで届いたか
+      user_id    : WordPress がそのヘッダーで認識したユーザー（0=認識できず）
+    """
+    if status == 200:
+        return "✅ 認証OK。WordPress がID/パスワードを受け取り、管理者として認識しています。"
+    if whoami is None:
+        return ("❌ 認証に失敗しました。原因を切り分ける診断窓口が見つかりません"
+                "（mu-plugin が古い、または未設置）。最新の av_hub_mu_plugin.php を設置してください。")
+    if not whoami.get("auth_header"):
+        return ("❌ 原因: サーバーが認証ヘッダー（Authorization）を落としています。ID/パスワードは関係ありません。\n"
+                "   対処: サイトの .htaccess の先頭に、次の4行を追加してください。\n"
+                "     <IfModule mod_rewrite.c>\n"
+                "     RewriteEngine On\n"
+                "     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]\n"
+                "     </IfModule>")
+    if not whoami.get("user_id"):
+        return ("❌ 原因: 認証ヘッダーは届いていますが、WordPress がユーザーとして認識できません。\n"
+                "   確認: ①WP_USERNAME はログイン用のユーザー名か（表示名・メールアドレスではない）\n"
+                "        ②WP_APP_PASSWORD は『アプリケーションパスワード』か（通常のログインパスワードではない）\n"
+                "        ③そのユーザーのプロフィールで、アプリケーションパスワードを作り直して再登録する")
+    return ("❌ ユーザーは認識できていますが、権限が足りません。"
+            "WP_USERNAME を『管理者』権限のユーザーにしてください。")
+
+
+def check_wp(cfg: Config) -> int:
+    """WordPress 側の接続・認証を、作品を送らずに診断する。"""
+    base = cfg.wp_url
+    pw_len = len(re.sub(r"\s", "", cfg.wp_password))
+    print(f"🔎 WP_URL = {base} / ユーザー = {cfg.wp_user} / アプリパスワード = {pw_len}文字（通常24文字）")
+    if pw_len != 24:
+        print("⚠️ アプリケーションパスワードは通常24文字（スペース除く）です。コピー漏れ・別の文字列の可能性があります。")
+    s = requests.Session()
+    s.headers["User-Agent"] = "av-sync/1.0"
+
+    def get(path: str, auth: bool = False) -> requests.Response | None:
+        try:
+            return s.get(f"{base}{path}", timeout=30,
+                         auth=HTTPBasicAuth(cfg.wp_user, cfg.wp_password) if auth else None)
+        except requests.RequestException as e:
+            print(f"❌ 接続失敗 {path}: {e}")
+            return None
+
+    r = get("/wp-json/")
+    if r is None:
+        return 1
+    print(f"1) REST API: HTTP {r.status_code} / 最終URL: {r.url}")
+    if r.history:
+        print(f"⚠️ リダイレクトされています（{r.history[0].url} → {r.url}）。"
+              "WP_URL を最終URLのホスト（www有無・https）に合わせてください。転送時に認証情報が外れます。")
+    try:
+        has_app_pw = "application-passwords" in (r.json().get("authentication") or {})
+    except ValueError:
+        has_app_pw = False
+    print("2) アプリケーションパスワード機能: " + ("有効" if has_app_pw else "❌ 無効（または REST が応答していません）"))
+
+    r2 = get("/wp-json/av/v1")
+    print("3) AVハブ（mu-plugin）の読み込み: " + ("✅ 読み込まれています" if r2 is not None and r2.status_code == 200
+                                          else f"❌ 見つかりません（HTTP {r2.status_code if r2 is not None else '-'}）"))
+
+    r3 = get("/wp-json/wp/v2/users/me", auth=True)
+    if r3 is None:
+        return 1
+    print(f"4) 認証テスト: HTTP {r3.status_code}")
+    whoami: dict[str, Any] | None = None
+    r4 = get("/wp-json/av/v1/whoami", auth=True)
+    if r4 is not None and r4.status_code == 200:
+        try:
+            whoami = r4.json()
+        except ValueError:
+            whoami = None
+        print(f"5) 診断窓口: 認証ヘッダー到達={whoami.get('auth_header') if whoami else '-'} / 認識されたユーザーID={whoami.get('user_id') if whoami else '-'}")
+    print(classify_auth(r3.status_code, whoami))
+    return 0 if r3.status_code == 200 else 1
+
+
 # ---------------------------------------------------------------- main ----
 
 def dedupe(items: list[Item]) -> list[Item]:
@@ -312,9 +394,12 @@ def run(mode: str, dry_run: bool) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="FANZA→WordPress AVハブ同期")
-    ap.add_argument("--mode", choices=("daily", "backfill"), default="daily")
+    ap.add_argument("--mode", choices=("daily", "backfill", "check"), default="daily",
+                    help="check=WordPressとの接続・認証の診断だけを行う")
     ap.add_argument("--dry-run", action="store_true", help="WPへ送信せず、取得結果だけ確認する")
     args = ap.parse_args()
+    if args.mode == "check":
+        return check_wp(load_config(need_wp=True, need_dmm=False))
     return run(args.mode, args.dry_run)
 
 
