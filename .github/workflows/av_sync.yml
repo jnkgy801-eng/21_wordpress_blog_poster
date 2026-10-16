@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'daily=日次 / backfill=初回の大量取り込み'
+        description: 'daily=日次 / backfill=初回の大量取り込み / check=WordPress接続の診断'
         type: choice
         default: daily
-        options: [daily, backfill]
+        options: [daily, backfill, check]
       dry_run:
         description: 'true=WPへ送らず取得結果だけ確認'
         type: boolean
