@@ -263,6 +263,9 @@ def classify_auth(status: int, whoami: dict[str, Any] | None) -> str:
     whoami は AVハブの /av/v1/whoami の応答。
       auth_header: 認証ヘッダーがサーバーのPHPまで届いたか
       user_id    : WordPress がそのヘッダーで認識したユーザー（0=認識できず）
+      auth_error : WordPress が認証を拒否した理由コード
+      app_pw_ok  : このリクエストでアプリケーションパスワードが使える状態か
+      ssl        : WordPress がHTTPS接続と判定しているか
     """
     if status == 200:
         return "✅ 認証OK。WordPress がID/パスワードを受け取り、管理者として認識しています。"
@@ -276,13 +279,28 @@ def classify_auth(status: int, whoami: dict[str, Any] | None) -> str:
                 "     RewriteEngine On\n"
                 "     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]\n"
                 "     </IfModule>")
-    if not whoami.get("user_id"):
-        return ("❌ 原因: 認証ヘッダーは届いていますが、WordPress がユーザーとして認識できません。\n"
-                "   確認: ①WP_USERNAME はログイン用のユーザー名か（表示名・メールアドレスではない）\n"
-                "        ②WP_APP_PASSWORD は『アプリケーションパスワード』か（通常のログインパスワードではない）\n"
-                "        ③そのユーザーのプロフィールで、アプリケーションパスワードを作り直して再登録する")
-    return ("❌ ユーザーは認識できていますが、権限が足りません。"
-            "WP_USERNAME を『管理者』権限のユーザーにしてください。")
+    err = whoami.get("auth_error") or ""
+    if whoami.get("user_id"):
+        return ("❌ ユーザーは認識できていますが、権限が足りません。"
+                "WP_USERNAME を『管理者』権限のユーザーにしてください。")
+    if err == "invalid_username":
+        return ("❌ 原因: その WP_USERNAME のユーザーが、このサイトに存在しません。\n"
+                "   対処: プロフィール画面の『ユーザー名』欄の文字を、そのまま WP_USERNAME に登録してください。\n"
+                "   （サイトごとにユーザーは別です。19/20 のサイトのユーザー名ではありません）")
+    if err == "incorrect_password":
+        return ("❌ 原因: ユーザー名は正しいが、アプリケーションパスワードが違います。\n"
+                "   対処: 『このサイト（adult-navi21.com）』のプロフィールでパスワードを作り直し、"
+                "表示された24文字を WP_APP_PASSWORD に登録してください。")
+    if err in ("application_passwords_disabled_for_user", "application_passwords_disabled"):
+        return ("❌ 原因: このユーザー（またはサイト）でアプリケーションパスワードが無効にされています。\n"
+                "   セキュリティ系のプラグインや設定が、無効化している可能性があります。")
+    if whoami.get("app_pw_ok") is False:
+        return ("❌ 原因: このリクエストではアプリケーションパスワードが使えない状態です。\n"
+                f"   WordPress のHTTPS判定={whoami.get('ssl')}。HTTPSと判定されていない場合、"
+                "サーバー設定（リバースプロキシ）の影響が考えられます。")
+    return ("❌ 認証ヘッダーは届いていますが、WordPress が認証処理を行っていないようです"
+            f"（理由コード={err or 'なし'} / HTTPS判定={whoami.get('ssl')}）。\n"
+            "   他のプラグインやサーバー設定が、REST API の認証に介入している可能性があります。この行を共有してください。")
 
 
 def check_wp(cfg: Config) -> int:
@@ -320,10 +338,17 @@ def check_wp(cfg: Config) -> int:
     print("3) AVハブ（mu-plugin）の読み込み: " + ("✅ 読み込まれています" if r2 is not None and r2.status_code == 200
                                           else f"❌ 見つかりません（HTTP {r2.status_code if r2 is not None else '-'}）"))
 
-    r3 = get("/wp-json/wp/v2/users/me", auth=True)
+    # 取り込みと同じ権限チェック（管理者のみ）を通るかを確認する。users/me はサーバー側で遮断されることがあるため使わない
+    r3 = get("/wp-json/av/v1/ping", auth=True)
     if r3 is None:
         return 1
-    print(f"4) 認証テスト: HTTP {r3.status_code}")
+    try:
+        body = r3.json()
+    except ValueError:
+        body = {}
+    print(f"4) 認証テスト: HTTP {r3.status_code} / code={body.get('code', '-') if isinstance(body, dict) else '-'}")
+    if r3.status_code == 403 and not isinstance(body, dict):
+        print("   ⚠️ 応答がWordPressのものではありません。サーバー側で遮断されている可能性があります。")
     whoami: dict[str, Any] | None = None
     r4 = get("/wp-json/av/v1/whoami", auth=True)
     if r4 is not None and r4.status_code == 200:
@@ -331,7 +356,9 @@ def check_wp(cfg: Config) -> int:
             whoami = r4.json()
         except ValueError:
             whoami = None
-        print(f"5) 診断窓口: 認証ヘッダー到達={whoami.get('auth_header') if whoami else '-'} / 認識されたユーザーID={whoami.get('user_id') if whoami else '-'}")
+        w = whoami or {}
+        print(f"5) 診断窓口: 認証ヘッダー到達={w.get('auth_header')} / 認識されたユーザーID={w.get('user_id')} / "
+              f"拒否理由={w.get('auth_error') or '-'} / アプリPW利用可={w.get('app_pw_ok')} / HTTPS判定={w.get('ssl')}")
     print(classify_auth(r3.status_code, whoami))
     return 0 if r3.status_code == 200 else 1
 
