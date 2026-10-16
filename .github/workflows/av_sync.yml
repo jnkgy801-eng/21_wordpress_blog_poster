@@ -1,0 +1,49 @@
+name: AVハブ同期（FANZA → WordPress）
+
+on:
+  schedule:
+    - cron: '0 20 * * *'   # 毎日 05:00 JST（ランキングの日次スナップショット）
+    - cron: '0 8 * * *'    # 毎日 17:00 JST（新着の追加取り込み）
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'daily=日次 / backfill=初回の大量取り込み'
+        type: choice
+        default: daily
+        options: [daily, backfill]
+      dry_run:
+        description: 'true=WPへ送らず取得結果だけ確認'
+        type: boolean
+        default: false
+
+# 同時実行すると同じ日のランキングを上書きし合うため、1本ずつ実行する
+concurrency:
+  group: av-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: 同期を実行
+        env:
+          DMM_API_ID: ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID: ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          EXTRA_EXCLUDE: ${{ vars.EXTRA_EXCLUDE }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'daily' }}"
+          ARGS="--mode $MODE"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python av_sync.py $ARGS
