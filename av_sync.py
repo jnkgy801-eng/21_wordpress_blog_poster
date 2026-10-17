@@ -10,7 +10,7 @@ FANZA動画（AV）→ WordPress（AVハブ）同期スクリプト。GitHub Act
   DMM_API_ID / DMM_AFFILIATE_ID
   WP_URL / WP_USERNAME / WP_APP_PASSWORD   （WP側はアプリケーションパスワード。管理者権限のユーザー）
 任意:
-  RANK_TOP_N(既定100) NEW_DAYS(既定14) NEW_MAX(既定300) BACKFILL_N(既定2000) EXTRA_EXCLUDE
+  RANK_TOP_N(既定100) REFRESH_N(既定300) NEW_DAYS(既定14) NEW_MAX(既定300) BACKFILL_N(既定2000) EXTRA_EXCLUDE
 """
 from __future__ import annotations
 
@@ -48,6 +48,7 @@ class Config:
     new_days: int
     new_max: int
     backfill_n: int
+    refresh_n: int
 
 
 def load_config(need_wp: bool, need_dmm: bool = True) -> Config:
@@ -68,6 +69,7 @@ def load_config(need_wp: bool, need_dmm: bool = True) -> Config:
         new_days=int(env("NEW_DAYS", "14")),
         new_max=int(env("NEW_MAX", "300")),
         backfill_n=int(env("BACKFILL_N", "2000")),
+        refresh_n=int(env("REFRESH_N", "300")),
     )
 
 
@@ -374,7 +376,9 @@ def run(mode: str, dry_run: bool) -> int:
     today = dt.datetime.now(JST)
 
     # 1) 人気順（ランキング）。順位は除外前の元の並びで記録する
-    top_n = cfg.backfill_n if mode == "backfill" else max(cfg.rank_top_n, 100)
+    # ランキングとして保存するのは上位 rank_top_n 件だが、価格・レビューの更新（最安値の記録）のため、
+    # 毎日は人気上位 refresh_n 件までを取り込み直す
+    top_n = cfg.backfill_n if mode == "backfill" else max(cfg.rank_top_n, cfg.refresh_n)
     ranked_raw = fetch_items(cfg, "rank", top_n)
     ranks: list[dict[str, Any]] = []
     normalized: list[Item] = []
