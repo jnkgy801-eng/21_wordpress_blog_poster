@@ -1,0 +1,57 @@
+name: 紹介文のCSV取り込み（ジャンル・女優・メーカー）
+
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: 'CSVのパス（リポジトリ内）'
+        type: string
+        default: 'content/genre_list.csv'
+      type:
+        description: '種類'
+        type: choice
+        default: genre
+        options: [genre, actress, maker]
+      dry_run:
+        description: 'true=照合結果の確認だけ（書き込まない）。まずtrueで確認してください'
+        type: boolean
+        default: true
+      overwrite:
+        description: 'true=記入済みの紹介文も上書きする（通常はfalse）'
+        type: boolean
+        default: false
+
+# 同時に実行すると結果が混ざるため、1本ずつ実行する
+concurrency:
+  group: av-intro-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: CSVを取り込む
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          EXTRA_EXCLUDE: ${{ vars.EXTRA_EXCLUDE }}
+          # 入力値はシェルに直接埋め込まず、環境変数として渡す（コマンドの混入を防ぐため）
+          IN_FILE: ${{ github.event.inputs.file }}
+          IN_TYPE: ${{ github.event.inputs.type }}
+          IN_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          IN_OVERWRITE: ${{ github.event.inputs.overwrite }}
+        run: |
+          ARGS=(--file "$IN_FILE" --type "$IN_TYPE")
+          if [ "$IN_DRY_RUN" = "true" ]; then ARGS+=(--dry-run); fi
+          if [ "$IN_OVERWRITE" = "true" ]; then ARGS+=(--overwrite); fi
+          python av_intro_import.py "${ARGS[@]}"
