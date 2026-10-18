@@ -37,6 +37,25 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: 必要なファイルがそろっているか確認
+        env:
+          IN_FILE: ${{ github.event.inputs.file }}
+        run: |
+          missing=0
+          for f in av_intro_import.py av_sync.py age_filter.py requirements.txt "$IN_FILE"; do
+            if [ ! -f "$f" ]; then
+              echo "❌ ファイルがありません: $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "--- リポジトリ直下にあるファイル ---"
+            ls -1
+            echo "※ av_intro_import.py / av_sync.py / age_filter.py は、リポジトリの『直下』（フォルダの中ではなく一番上）に置いてください。"
+            exit 1
+          fi
+          echo "✅ 必要なファイルがそろっています"
+
       - run: pip install -r requirements.txt
 
       - name: CSVを取り込む
