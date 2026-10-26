@@ -42,6 +42,7 @@ jobs:
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           EXTRA_EXCLUDE: ${{ vars.EXTRA_EXCLUDE }}
+          FOCUS_KEYWORDS: ${{ vars.FOCUS_KEYWORDS }}   # 未設定なら既定（寝取り,寝取られ,NTR）
         run: |
           MODE="${{ github.event.inputs.mode || 'daily' }}"
           ARGS="--mode $MODE"
