@@ -11,6 +11,8 @@ FANZA動画（AV）→ WordPress（AVハブ）同期スクリプト。GitHub Act
   WP_URL / WP_USERNAME / WP_APP_PASSWORD   （WP側はアプリケーションパスワード。管理者権限のユーザー）
 任意:
   RANK_TOP_N(既定100) REFRESH_N(既定300) NEW_DAYS(既定14) NEW_MAX(既定300) BACKFILL_N(既定2000) EXTRA_EXCLUDE
+  FOCUS_KEYWORDS(既定「寝取り,寝取られ,NTR」。先頭の語で特化ジャンルのランキングを記録。未設定なら既定。「-」にすると特化取得をしない)
+  FOCUS_N(既定200) FOCUS_BACKFILL_N(既定1000) FOCUS_RANK_N(既定100)
 """
 from __future__ import annotations
 
@@ -49,6 +51,10 @@ class Config:
     new_max: int
     backfill_n: int
     refresh_n: int
+    focus_keywords: tuple[str, ...]
+    focus_n: int
+    focus_backfill_n: int
+    focus_rank_n: int
 
 
 def load_config(need_wp: bool, need_dmm: bool = True) -> Config:
@@ -70,12 +76,17 @@ def load_config(need_wp: bool, need_dmm: bool = True) -> Config:
         new_max=int(env("NEW_MAX", "300")),
         backfill_n=int(env("BACKFILL_N", "2000")),
         refresh_n=int(env("REFRESH_N", "300")),
+        focus_keywords=tuple(k.strip() for k in (env("FOCUS_KEYWORDS") or "寝取り,寝取られ,NTR").split(",") if k.strip() and k.strip() != "-"),
+        focus_n=int(env("FOCUS_N", "200")),
+        focus_backfill_n=int(env("FOCUS_BACKFILL_N", "1000")),
+        focus_rank_n=min(int(env("FOCUS_RANK_N", "100")), 100),
     )
 
 
 # ---------------------------------------------------------------- 取得 ----
 
-def fetch_items(cfg: Config, sort: str, limit: int, gte_date: str | None = None) -> list[Item]:
+def fetch_items(cfg: Config, sort: str, limit: int, gte_date: str | None = None,
+                keyword: str | None = None) -> list[Item]:
     """FANZA動画をページングで取得する。途中で失敗した場合は取得済み分を返す。"""
     out: list[Item] = []
     offset = 1
@@ -95,6 +106,8 @@ def fetch_items(cfg: Config, sort: str, limit: int, gte_date: str | None = None)
         }
         if gte_date:
             params["gte_date"] = gte_date
+        if keyword:
+            params["keyword"] = keyword
         items = _get_page(params)
         if not items:
             break
@@ -399,6 +412,25 @@ def run(mode: str, dry_run: bool) -> int:
         if n is not None:
             normalized.append(n)
 
+    # 3) 特化ジャンル（既定はNTR）: 全体の人気上位に入らない作品も集め、ジャンル内のランキングを別に記録する
+    focus_ranks: list[dict[str, Any]] = []
+    if cfg.focus_keywords:
+        n_focus = cfg.focus_backfill_n if mode == "backfill" else cfg.focus_n
+        primary = cfg.focus_keywords[0]
+        for pos, raw in enumerate(fetch_items(cfg, "rank", n_focus, keyword=primary), start=1):
+            n = normalize(raw, cfg)
+            if n is None:
+                continue
+            normalized.append(n)
+            if pos <= cfg.focus_rank_n:
+                focus_ranks.append({"cid": n["cid"], "pos": pos})
+        for kw in cfg.focus_keywords:
+            for raw in fetch_items(cfg, "date", n_focus if mode == "backfill" else cfg.new_max, gte_date=gte, keyword=kw):
+                n = normalize(raw, cfg)
+                if n is not None:
+                    normalized.append(n)
+        print(f"🎯 特化ジャンル（{'/'.join(cfg.focus_keywords)}）: ランキング {len(focus_ranks)}件")
+
     items = dedupe(normalized)
     print(f"📦 取得 {len(ranked_raw)}件(人気) → 取り込み対象 {len(items)}件 / ランキング {len(ranks)}件")
     if not items:
@@ -420,6 +452,13 @@ def run(mode: str, dry_run: bool) -> int:
     except RuntimeError as e:
         print(f"❌ {e}", file=sys.stderr)
         return 1
+    if focus_ranks:
+        try:
+            res = wp.post("rank", {"day": today.strftime("%Y-%m-%d"), "ranks": focus_ranks, "focus": True})
+            print(f"✅ 特化ランキング保存 {res.get('saved')}件 ({res.get('day')})")
+        except RuntimeError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 1
     return 1 if failed else 0
 
 
