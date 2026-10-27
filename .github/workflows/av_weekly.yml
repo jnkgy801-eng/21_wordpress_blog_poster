@@ -1,0 +1,49 @@
+name: AVハブ 週次まとめ画像
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'   # 毎週月曜 09:00 JST
+  workflow_dispatch:
+    inputs:
+      post:
+        description: 'true=画像のアップロードと Buffer 投稿まで試す（false=画像と文章を作るだけ）'
+        type: boolean
+        default: false
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: フォントとライブラリを入れる
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+          pip install requests pillow
+
+      - name: 週次画像を作る
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}   # 任意
+          BUFFER_PROFILE_IDS: ${{ vars.BUFFER_PROFILE_IDS }}        # 任意（カンマ区切り）
+          HASHTAGS: ${{ vars.WEEKLY_HASHTAGS }}                    # 任意。未設定なら「#NTR #寝取られ」
+          MASK_WORDS: ${{ vars.WEEKLY_MASK_WORDS }}                # 任意。画像内で伏せたい語（カンマ区切り）
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.post }}" = "true" ]; then ARGS="--post"; fi
+          python av_weekly_card.py $ARGS
+
+      - name: 画像と投稿文を保存（Actions の Artifacts からダウンロード可）
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-card
+          path: out/
+          if-no-files-found: ignore
