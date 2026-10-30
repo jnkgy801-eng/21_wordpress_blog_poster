@@ -1,0 +1,63 @@
+name: AVハブ Bluesky自動投稿
+
+on:
+  schedule:
+    - cron: '30 21 * * *'   # 毎日 06:30 JST（05:00 JST の同期が終わったあと）
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true=画像と文章を作るだけ（投稿しない）。初回はまず true で確認してください'
+        type: boolean
+        default: true
+      days:
+        description: '1=前日比（日次） / 7=週間'
+        type: choice
+        default: '1'
+        options: ['1', '7']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: av-bluesky
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: フォントとライブラリを入れる
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+          pip install requests pillow
+
+      - name: 画像を作って Bluesky に投稿
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+          BSKY_LABEL: ${{ vars.BSKY_LABEL }}              # 任意。未設定なら porn
+          BSKY_DAYS: ${{ github.event.inputs.days || '1' }}
+          HASHTAGS: ${{ vars.WEEKLY_HASHTAGS }}           # 任意。未設定なら「#NTR #寝取られ」
+          MASK_WORDS: ${{ vars.WEEKLY_MASK_WORDS }}       # 任意。画像内で伏せたい語（カンマ区切り）
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          ARGS=""
+          if [ "$DRY_RUN" = "true" ]; then ARGS="--dry-run"; fi
+          python av_bluesky_post.py $ARGS
+
+      - name: 画像と投稿文を保存（Actions の Artifacts からダウンロード可）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluesky-card
+          path: out/
+          if-no-files-found: ignore

@@ -16,6 +16,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 # 同時実行すると同じ日のランキングを上書きし合うため、1本ずつ実行する
 concurrency:
   group: av-sync
@@ -31,6 +34,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - run: pip install -r requirements.txt
 
@@ -43,8 +48,32 @@ jobs:
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           EXTRA_EXCLUDE: ${{ vars.EXTRA_EXCLUDE }}
           FOCUS_KEYWORDS: ${{ vars.FOCUS_KEYWORDS }}   # 未設定なら既定（寝取り,寝取られ,NTR）
+          # 入力値はシェルに直接埋め込まず、環境変数として渡す（コマンド注入の防止）
+          MODE: ${{ github.event.inputs.mode || 'daily' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
-          MODE="${{ github.event.inputs.mode || 'daily' }}"
           ARGS="--mode $MODE"
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           python av_sync.py $ARGS
+
+      # Bing / Yandex へ「更新されたページ」を通知する（任意）。Variables に INDEXNOW_KEY を入れたときだけ動く。
+      # 失敗しても同期自体は成功として扱う。
+      - name: IndexNow で更新を通知
+        if: success() && github.event.inputs.dry_run != 'true' && github.event.inputs.mode != 'check' && vars.INDEXNOW_KEY != ''
+        continue-on-error: true
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          INDEXNOW_KEY: ${{ vars.INDEXNOW_KEY }}
+        run: python indexnow_ping.py
+
+      # 任意: Secrets に DISCORD_WEBHOOK_URL を入れると、失敗時に通知する（未設定なら何もしない）
+      - name: 失敗をDiscordへ通知
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -n "$WEBHOOK" ]; then
+            curl -fsS -H "Content-Type: application/json" \
+              -d "{\"content\":\"AVハブ同期が失敗しました: $RUN_URL\"}" "$WEBHOOK" || true
+          fi
