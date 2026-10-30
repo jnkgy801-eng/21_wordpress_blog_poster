@@ -100,8 +100,25 @@ def yen(n: int | None) -> str:
     return "—" if n is None else f"¥{n:,}"
 
 
-def fetch(site: str, focus: bool) -> dict[str, Any]:
-    params = {"focus": "1" if focus else "0"}
+def span_of(data: dict[str, Any]) -> int:
+    """集計の日数。プラグインが古く span を返さない場合は 7 日（週間）として扱う。"""
+    try:
+        return max(1, int(data.get("span") or 7))
+    except (TypeError, ValueError):
+        return 7
+
+
+def period_label(data: dict[str, Any]) -> str:
+    return "今日" if span_of(data) == 1 else "今週"
+
+
+def span_phrase(data: dict[str, Any]) -> str:
+    span = span_of(data)
+    return "前日から" if span == 1 else f"直近{span}日で"
+
+
+def fetch(site: str, focus: bool, days: int = 7) -> dict[str, Any]:
+    params = {"focus": "1" if focus else "0", "days": str(days)}
     last: Exception | None = None
     for url, p in ((f"{site}/wp-json/av/v1/weekly", params), (f"{site}/", {**params, "rest_route": "/av/v1/weekly"})):
         try:
@@ -111,7 +128,7 @@ def fetch(site: str, focus: bool) -> dict[str, Any]:
             last = RuntimeError(f"HTTP {r.status_code}")
         except requests.RequestException as e:
             last = e
-    sys.exit(f"❌ 週次データを取得できません（{last}）。サイトのプラグインが v1.4.0 以上か確認してください。")
+    sys.exit(f"❌ 週次データを取得できません（{last}）。サイトのプラグインが v1.5.0 以上か確認してください（days 指定は v1.5.0 から）。")
 
 
 def base_canvas(title: str, subtitle: str, site: str, accent: tuple[int, int, int]) -> tuple[Image.Image, ImageDraw.ImageDraw]:
@@ -131,7 +148,7 @@ def footer(d: ImageDraw.ImageDraw, url: str) -> None:
 def rank_card(data: dict[str, Any], rows: list[dict[str, Any]], mode: str, words: list[str], accent: tuple[int, int, int]) -> Image.Image:
     label = data.get("label") or ""
     if mode == "movers":
-        title = f"今週の{label}急上昇 TOP{len(rows)}"
+        title = f"{period_label(data)}の{label}急上昇 TOP{len(rows)}"
         sub = f"{(data.get('base_day') or '')[5:].replace('-', '/')} → {(data.get('day') or '')[5:].replace('-', '/')} の人気順位の変化"
     else:
         title = f"いまの{label}人気 TOP{len(rows)}"
@@ -170,7 +187,7 @@ def rank_card(data: dict[str, Any], rows: list[dict[str, Any]], mode: str, words
 
 def drop_card(data: dict[str, Any], rows: list[dict[str, Any]], words: list[str], accent: tuple[int, int, int]) -> Image.Image:
     label = data.get("label") or ""
-    img, d = base_canvas(f"今週の{label}値下がり TOP{len(rows)}", "直近7日で、価格が下がった作品（当サイトの価格記録より）", data.get("site", ""), accent)
+    img, d = base_canvas(f"{period_label(data)}の{label}値下がり TOP{len(rows)}", f"{span_phrase(data)}、価格が下がった作品（当サイトの価格記録より）", data.get("site", ""), accent)
     f_t, f_s, f_n, f_b = load_font(30, True), load_font(21), load_font(34, True), load_font(26, True)
     top, step = 176, 90
     for i, r in enumerate(rows):
@@ -192,7 +209,7 @@ def drop_card(data: dict[str, Any], rows: list[dict[str, Any]], words: list[str]
 
 def make_post_text(data: dict[str, Any], has_movers: bool, has_drops: bool, hashtags: str) -> str:
     label = data.get("label") or ""
-    head = f"【今週の{label}急上昇TOP5】" if has_movers else f"【いまの{label}人気TOP5】"
+    head = f"【{period_label(data)}の{label}急上昇TOP5】" if has_movers else f"【いまの{label}人気TOP5】"
     lines = [head]
     if has_drops:
         lines.append("値下がりした作品もまとめました")

@@ -393,6 +393,12 @@ def run(mode: str, dry_run: bool) -> int:
     # 毎日は人気上位 refresh_n 件までを取り込み直す
     top_n = cfg.backfill_n if mode == "backfill" else max(cfg.rank_top_n, cfg.refresh_n)
     ranked_raw = fetch_items(cfg, "rank", top_n)
+    # fetch_items は途中で API が失敗すると取得済み分だけを返す。欠けたランキングを保存すると
+    # 翌日の「急上昇」「新規ランクイン」が実態とずれるため、期待件数の一定割合に満たなければ保存せず終了する
+    min_ratio = float(os.environ.get("RANK_MIN_RATIO", "0.8"))
+    if mode != "backfill" and len(ranked_raw) < int(top_n * min_ratio):
+        print(f"❌ 人気順の取得が {len(ranked_raw)}/{top_n} 件でした（下限 {min_ratio:.0%}）。API障害の可能性があるため、保存せず終了します。", file=sys.stderr)
+        return 1
     ranks: list[dict[str, Any]] = []
     normalized: list[Item] = []
     for pos, raw in enumerate(ranked_raw, start=1):
