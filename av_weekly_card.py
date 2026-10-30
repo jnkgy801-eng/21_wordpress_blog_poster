@@ -256,7 +256,8 @@ def main() -> int:
     ap.add_argument("--post", action="store_true", help="画像のアップロードと Buffer 投稿まで試す")
     args = ap.parse_args()
 
-    env = lambda k, d="": os.environ.get(k, d).strip()  # noqa: E731
+    # GitHub Actions は未設定の vars を「空文字」で渡す。空のときも既定値 d を使う
+    env = lambda k, d="": os.environ.get(k, "").strip() or d  # noqa: E731
     site = env("WP_URL").rstrip("/")
     if not site:
         sys.exit("❌ WP_URL が未設定です。")

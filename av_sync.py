@@ -59,7 +59,8 @@ class Config:
 
 def load_config(need_wp: bool, need_dmm: bool = True) -> Config:
     # Secrets の貼り付け時に混ざりやすい前後の空白・改行は除去する
-    env = lambda k, d="": os.environ.get(k, d).strip()  # noqa: E731
+    # GitHub Actions は未設定の vars を「空文字」で渡す。空のときも既定値 d を使う
+    env = lambda k, d="": os.environ.get(k, "").strip() or d  # noqa: E731
     missing = [k for k in ("DMM_API_ID", "DMM_AFFILIATE_ID") if need_dmm and not env(k)]
     if need_wp:
         missing += [k for k in ("WP_URL", "WP_USERNAME", "WP_APP_PASSWORD") if not env(k)]
