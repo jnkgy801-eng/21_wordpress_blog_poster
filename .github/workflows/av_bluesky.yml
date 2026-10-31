@@ -8,7 +8,7 @@ on:
       dry_run:
         description: 'true=画像と文章を作るだけ（投稿しない）。初回はまず true で確認してください'
         type: boolean
-        default: true
+        default: false
       days:
         description: '7=1週間前との比較（既定） / 1=前日比'
         type: choice
