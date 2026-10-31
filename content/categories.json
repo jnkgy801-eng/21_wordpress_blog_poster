@@ -1,0 +1,27 @@
+{
+  "_readme": "特化カテゴリ（サイトのヘッダーのタブ）の定義。slug はサイト側 av_hub_mu_plugin.php の AV_HUB_CATS と同じにする。floor: videoa=ビデオ / videoc=素人。集め方は keywords（キーワード検索）/ genre_name（FANZAのジャンル名。IDは実行時にAPIで引く）/ floor だけ（そのフロアの全作品）のどれか。add_genre は、取り込む作品にそのジャンル名を付け足す（フロアで集めるとき、サイト側の判定語と揃えるため）。primary は従来の特化ジャンル（NTR）に1つだけ付ける。",
+  "categories": [
+    {
+      "slug": "ntr",
+      "label": "NTR",
+      "floor": "videoa",
+      "keywords": ["寝取り", "寝取られ", "NTR"],
+      "primary": true,
+      "hashtags": "#NTR #寝取られ"
+    },
+    {
+      "slug": "hard",
+      "label": "ハード系",
+      "floor": "videoa",
+      "genre_name": "淫乱・ハード系",
+      "hashtags": "#ハード系 #淫乱"
+    },
+    {
+      "slug": "amateur",
+      "label": "素人",
+      "floor": "videoc",
+      "add_genre": "素人",
+      "hashtags": "#素人"
+    }
+  ]
+}
