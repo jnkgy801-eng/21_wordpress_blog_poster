@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'daily=日次 / backfill=初回の大量取り込み / check=WordPress接続の診断'
+        description: 'daily=日次 / backfill=初回の大量取り込み / check=WordPress接続の診断 / cats=特化カテゴリの設定をDMM APIで確認（送信しない）'
         type: choice
         default: daily
-        options: [daily, backfill, check]
+        options: [daily, backfill, check, cats]
       dry_run:
         description: 'true=WPへ送らず取得結果だけ確認'
         type: boolean
@@ -47,7 +47,7 @@ jobs:
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           EXTRA_EXCLUDE: ${{ vars.EXTRA_EXCLUDE }}
-          FOCUS_KEYWORDS: ${{ vars.FOCUS_KEYWORDS }}   # 未設定なら既定（寝取り,寝取られ,NTR）
+          FOCUS_KEYWORDS: ${{ vars.FOCUS_KEYWORDS }}   # 任意。NTR（primary）の語を上書き。特化カテゴリの定義は content/categories.json
           # 入力値はシェルに直接埋め込まず、環境変数として渡す（コマンド注入の防止）
           MODE: ${{ github.event.inputs.mode || 'daily' }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -59,7 +59,7 @@ jobs:
       # Bing / Yandex へ「更新されたページ」を通知する（任意）。Variables に INDEXNOW_KEY を入れたときだけ動く。
       # 失敗しても同期自体は成功として扱う。
       - name: IndexNow で更新を通知
-        if: success() && github.event.inputs.dry_run != 'true' && github.event.inputs.mode != 'check' && vars.INDEXNOW_KEY != ''
+        if: success() && github.event.inputs.dry_run != 'true' && github.event.inputs.mode != 'check' && github.event.inputs.mode != 'cats' && vars.INDEXNOW_KEY != ''
         continue-on-error: true
         env:
           WP_URL: ${{ secrets.WP_URL }}

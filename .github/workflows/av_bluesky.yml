@@ -10,10 +10,14 @@ on:
         type: boolean
         default: true
       days:
-        description: '1=前日比（日次） / 7=週間'
+        description: '7=1週間前との比較（既定） / 1=前日比'
         type: choice
-        default: '1'
-        options: ['1', '7']
+        default: '7'
+        options: ['7', '1']
+      cats:
+        description: '投稿するカテゴリ（カンマ区切り。空=Variables の BSKY_CATS、それも空なら全カテゴリ。all=サイト全体 / rotate=毎日1つ）'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -45,8 +49,10 @@ jobs:
           BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
           BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
           BSKY_LABEL: ${{ vars.BSKY_LABEL }}              # 任意。未設定なら porn
-          BSKY_DAYS: ${{ github.event.inputs.days || '1' }}
-          HASHTAGS: ${{ vars.WEEKLY_HASHTAGS }}           # 任意。未設定なら「#NTR #寝取られ」
+          BSKY_DAYS: ${{ github.event.inputs.days || '7' }}
+          BSKY_CATS: ${{ github.event.inputs.cats || vars.BSKY_CATS }}   # 任意。例: ntr,hard / rotate / all。空なら全カテゴリ
+          FOCUS_KEYWORDS: ${{ vars.FOCUS_KEYWORDS }}
+          HASHTAGS: ${{ vars.WEEKLY_HASHTAGS }}           # 任意。カテゴリに指定がないときのタグ（未設定なら「#FANZA #AV」）
           MASK_WORDS: ${{ vars.WEEKLY_MASK_WORDS }}       # 任意。画像内で伏せたい語（カンマ区切り）
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
