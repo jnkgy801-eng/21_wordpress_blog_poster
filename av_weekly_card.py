@@ -117,8 +117,11 @@ def span_phrase(data: dict[str, Any]) -> str:
     return "前日から" if span == 1 else f"直近{span}日で"
 
 
-def fetch(site: str, focus: bool, days: int = 7) -> dict[str, Any]:
+def fetch(site: str, focus: bool, days: int = 7, cat: str = "") -> dict[str, Any]:
+    """cat=カテゴリのslug（v1.6.0以降）。指定がなければ focus（従来の特化ジャンル / 全体）で決まる。"""
     params = {"focus": "1" if focus else "0", "days": str(days)}
+    if cat:
+        params["cat"] = cat
     last: Exception | None = None
     for url, p in ((f"{site}/wp-json/av/v1/weekly", params), (f"{site}/", {**params, "rest_route": "/av/v1/weekly"})):
         try:

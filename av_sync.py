@@ -5,14 +5,16 @@ FANZA動画（AV）→ WordPress（AVハブ）同期スクリプト。GitHub Act
   python av_sync.py --mode daily      # 毎日: 人気上位 + 直近の新着を取り込み、当日のランキングを保存
   python av_sync.py --mode backfill   # 初回: 人気順で多めに取り込む（カタログの土台づくり）
   python av_sync.py --mode daily --dry-run   # 取得とフィルターだけ確認（WPには送らない）
+  python av_sync.py --mode cats       # 特化カテゴリ（content/categories.json）の設定をDMM APIで確認する（WPには送らない）
 
 必須の環境変数:
   DMM_API_ID / DMM_AFFILIATE_ID
   WP_URL / WP_USERNAME / WP_APP_PASSWORD   （WP側はアプリケーションパスワード。管理者権限のユーザー）
 任意:
   RANK_TOP_N(既定100) REFRESH_N(既定300) NEW_DAYS(既定14) NEW_MAX(既定300) BACKFILL_N(既定2000) EXTRA_EXCLUDE
-  FOCUS_KEYWORDS(既定「寝取り,寝取られ,NTR」。先頭の語で特化ジャンルのランキングを記録。未設定なら既定。「-」にすると特化取得をしない)
-  FOCUS_N(既定200) FOCUS_BACKFILL_N(既定1000) FOCUS_RANK_N(既定100)
+  特化カテゴリ（NTR / ハード系 / 素人 など）は content/categories.json で定義する。カテゴリごとに、集めた作品と、カテゴリ内の人気ランキングを記録する。
+  FOCUS_KEYWORDS(従来の特化ジャンル=primary の語を上書き。「-」にすると primary のカテゴリを取得しない)
+  FOCUS_N(既定200) FOCUS_BACKFILL_N(既定1000) FOCUS_RANK_N(既定100)  ※カテゴリごとの n / rank_n で個別に変えられる
 """
 from __future__ import annotations
 
@@ -30,9 +32,12 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 from age_filter import is_allowed
+from categories import Category, load_categories, parse_floor_id, parse_genres, pick_genre
 
 JST = dt.timezone(dt.timedelta(hours=9))
 DMM_API = "https://api.dmm.com/affiliate/v3/ItemList"
+DMM_FLOOR_API = "https://api.dmm.com/affiliate/v3/FloorList"
+DMM_GENRE_API = "https://api.dmm.com/affiliate/v3/GenreSearch"
 PAGE_SIZE = 100          # DMM API の hits 上限
 BATCH_SIZE = 50          # WPへ1回に送る件数（PHPのタイムアウト対策）
 API_SLEEP_SEC = 0.6      # API負荷とレート制限への配慮
@@ -51,7 +56,7 @@ class Config:
     new_max: int
     backfill_n: int
     refresh_n: int
-    focus_keywords: tuple[str, ...]
+    categories: tuple[Category, ...]
     focus_n: int
     focus_backfill_n: int
     focus_rank_n: int
@@ -77,7 +82,7 @@ def load_config(need_wp: bool, need_dmm: bool = True) -> Config:
         new_max=int(env("NEW_MAX", "300")),
         backfill_n=int(env("BACKFILL_N", "2000")),
         refresh_n=int(env("REFRESH_N", "300")),
-        focus_keywords=tuple(k.strip() for k in (env("FOCUS_KEYWORDS") or "寝取り,寝取られ,NTR").split(",") if k.strip() and k.strip() != "-"),
+        categories=load_categories(focus_keywords_env=env("FOCUS_KEYWORDS")),
         focus_n=int(env("FOCUS_N", "200")),
         focus_backfill_n=int(env("FOCUS_BACKFILL_N", "1000")),
         focus_rank_n=min(int(env("FOCUS_RANK_N", "100")), 100),
@@ -87,7 +92,7 @@ def load_config(need_wp: bool, need_dmm: bool = True) -> Config:
 # ---------------------------------------------------------------- 取得 ----
 
 def fetch_items(cfg: Config, sort: str, limit: int, gte_date: str | None = None,
-                keyword: str | None = None) -> list[Item]:
+                keyword: str | None = None, floor: str = "videoa", article_id: str | None = None) -> list[Item]:
     """FANZA動画をページングで取得する。途中で失敗した場合は取得済み分を返す。"""
     out: list[Item] = []
     offset = 1
@@ -97,7 +102,7 @@ def fetch_items(cfg: Config, sort: str, limit: int, gte_date: str | None = None,
             "affiliate_id": cfg.dmm_affiliate_id,
             "site": "FANZA",
             "service": "digital",
-            "floor": "videoa",
+            "floor": floor,
             "hits": min(PAGE_SIZE, limit - len(out)),
             "offset": offset,
             "sort": sort,
@@ -109,6 +114,9 @@ def fetch_items(cfg: Config, sort: str, limit: int, gte_date: str | None = None,
             params["gte_date"] = gte_date
         if keyword:
             params["keyword"] = keyword
+        if article_id:   # ジャンルIDでの絞り込み
+            params["article"] = "genre"
+            params["article_id"] = article_id
         items = _get_page(params)
         if not items:
             break
@@ -132,6 +140,90 @@ def _get_page(params: dict[str, Any], retries: int = 3) -> list[Item]:
             print(f"⚠️ DMM API失敗 (offset={params['offset']}, {attempt}/{retries}): {e}", file=sys.stderr)
             time.sleep(2 * attempt)
     return []
+
+
+def _get_json(url: str, params: dict[str, Any], retries: int = 3) -> dict[str, Any] | None:
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=20)
+            r.raise_for_status()
+            body = r.json()
+            return body if isinstance(body, dict) else None
+        except (requests.RequestException, ValueError) as e:
+            print(f"⚠️ DMM API失敗 ({url.rsplit('/', 1)[-1]}, {attempt}/{retries}): {e}", file=sys.stderr)
+            time.sleep(2 * attempt)
+    return None
+
+
+def _auth_params(cfg: Config) -> dict[str, Any]:
+    return {"api_id": cfg.dmm_api_id, "affiliate_id": cfg.dmm_affiliate_id, "output": "json"}
+
+
+def resolve_floor_id(cfg: Config, floor_code: str) -> str | None:
+    """フロアコード（videoa / videoc）→ フロアID。ジャンル検索に必要。"""
+    body = _get_json(DMM_FLOOR_API, _auth_params(cfg))
+    return parse_floor_id(body, floor_code) if body else None
+
+
+def resolve_genre_id(cfg: Config, floor_code: str, genre_name: str) -> tuple[str | None, list[str]]:
+    """ジャンル名 → ジャンルID（FANZAのジャンル一覧から探す）。戻り値: (ID または None, 候補名)。"""
+    floor_id = resolve_floor_id(cfg, floor_code)
+    if not floor_id:
+        print(f"⚠️ フロア「{floor_code}」のIDをAPIから取得できませんでした。", file=sys.stderr)
+        return None, []
+    genres: list[dict[str, str]] = []
+    offset = 1
+    while True:
+        body = _get_json(DMM_GENRE_API, {**_auth_params(cfg), "floor_id": floor_id, "hits": 500, "offset": offset})
+        batch = parse_genres(body) if body else []
+        genres.extend(batch)
+        try:
+            total = int(((body or {}).get("result") or {}).get("total_count") or len(genres))
+        except (TypeError, ValueError):
+            total = len(genres)
+        if not batch or len(genres) >= total:
+            break
+        offset += len(batch)
+        time.sleep(API_SLEEP_SEC)
+    return pick_genre(genres, genre_name)
+
+
+def collect_category(cfg: Config, cat: Category, mode: str, gte: str, min_ratio: float
+                     ) -> tuple[list[Item], list[dict[str, Any]], bool] | None:
+    """カテゴリの作品と、カテゴリ内の人気ランキングを集める。
+
+    戻り値: (取り込む作品, ランキング, ランキングが十分な件数あるか)。ジャンルIDが決められないなど、集められなければ None。
+    """
+    article_id: str | None = None
+    if cat.genre_name:
+        article_id, candidates = resolve_genre_id(cfg, cat.floor, cat.genre_name)
+        if not article_id:
+            hint = f" 候補: {' / '.join(candidates)}" if candidates else ""
+            print(f"❌ カテゴリ「{cat.slug}」: ジャンル名「{cat.genre_name}」のIDを特定できません。{hint}\n"
+                  "   `python av_sync.py --mode cats` で確認し、content/categories.json の genre_name を直してください。", file=sys.stderr)
+            return None
+    n = cat.n or (cfg.focus_backfill_n if mode == "backfill" else cfg.focus_n)
+    rank_n = min(cat.rank_n or cfg.focus_rank_n, 100)
+    new_limit = n if mode == "backfill" else cfg.new_max
+    kw0 = cat.keywords[0] if cat.keywords else None
+
+    items: list[Item] = []
+    ranks: list[dict[str, Any]] = []
+    raw_rank = fetch_items(cfg, "rank", n, keyword=kw0, floor=cat.floor, article_id=article_id)
+    for pos, raw in enumerate(raw_rank, start=1):
+        it = normalize(raw, cfg, extra_genre=cat.add_genre)
+        if it is None:
+            continue
+        items.append(it)
+        if pos <= rank_n:
+            ranks.append({"cid": it["cid"], "pos": pos})
+    complete = len(raw_rank) >= int(rank_n * min_ratio)
+    for kw in (cat.keywords or (None,)):
+        for raw in fetch_items(cfg, "date", new_limit, gte_date=gte, keyword=kw, floor=cat.floor, article_id=article_id):
+            it = normalize(raw, cfg, extra_genre=cat.add_genre)
+            if it is not None:
+                items.append(it)
+    return items, ranks, complete
 
 
 # ---------------------------------------------------------------- 正規化 ----
@@ -166,7 +258,7 @@ def _affiliate_url(item: Item, affiliate_id: str) -> str:
     )
 
 
-def normalize(item: Item, cfg: Config) -> Item | None:
+def normalize(item: Item, cfg: Config, extra_genre: str = "") -> Item | None:
     """APIの1件をWP送信用に整える。必須項目が欠けるもの・除外対象は None。"""
     cid = item.get("content_id") or item.get("product_id") or ""
     title = (item.get("title") or "").strip()
@@ -186,6 +278,9 @@ def normalize(item: Item, cfg: Config) -> Item | None:
     if not ok:
         print(f"🛡️ 除外: {cid} ({hits[0]})")
         return None
+
+    if extra_genre and extra_genre not in genres:
+        genres = genres + [extra_genre]   # サイト側がこのジャンル名でカテゴリを判定する
 
     samples: list[str] = []
     block = item.get("sampleImageURL") or {}
@@ -255,6 +350,16 @@ class WpClient:
                 last = str(e)
             time.sleep(3 * attempt)
         raise RuntimeError(f"{path} 送信失敗: {last}")
+
+
+def wp_get(wp: WpClient, path: str) -> dict[str, Any] | None:
+    """認証つきGET。失敗したら None（旧版のプラグインなどで窓口が無い場合を含む）。"""
+    try:
+        r = wp.s.get(f"{wp.base}/{path}", timeout=30)
+        body = r.json() if r.status_code == 200 else None
+        return body if isinstance(body, dict) else None
+    except (requests.RequestException, ValueError):
+        return None
 
 
 def send_items(wp: WpClient, items: list[Item]) -> tuple[int, int]:
@@ -382,7 +487,14 @@ def check_wp(cfg: Config) -> int:
 # ---------------------------------------------------------------- main ----
 
 def dedupe(items: list[Item]) -> list[Item]:
-    return list({it["cid"]: it for it in items}.values())
+    """同じ作品は1件にまとめる（後のデータを採用）。カテゴリ判定用に付けたジャンルは、どちらの分も残す。"""
+    merged: dict[str, Item] = {}
+    for it in items:
+        old = merged.get(it["cid"])
+        if old is not None:
+            it = {**it, "genres": list(dict.fromkeys([*old.get("genres", []), *it.get("genres", [])]))}
+        merged[it["cid"]] = it
+    return list(merged.values())
 
 
 def run(mode: str, dry_run: bool) -> int:
@@ -419,24 +531,22 @@ def run(mode: str, dry_run: bool) -> int:
         if n is not None:
             normalized.append(n)
 
-    # 3) 特化ジャンル（既定はNTR）: 全体の人気上位に入らない作品も集め、ジャンル内のランキングを別に記録する
-    focus_ranks: list[dict[str, Any]] = []
-    if cfg.focus_keywords:
-        n_focus = cfg.focus_backfill_n if mode == "backfill" else cfg.focus_n
-        primary = cfg.focus_keywords[0]
-        for pos, raw in enumerate(fetch_items(cfg, "rank", n_focus, keyword=primary), start=1):
-            n = normalize(raw, cfg)
-            if n is None:
-                continue
-            normalized.append(n)
-            if pos <= cfg.focus_rank_n:
-                focus_ranks.append({"cid": n["cid"], "pos": pos})
-        for kw in cfg.focus_keywords:
-            for raw in fetch_items(cfg, "date", n_focus if mode == "backfill" else cfg.new_max, gte_date=gte, keyword=kw):
-                n = normalize(raw, cfg)
-                if n is not None:
-                    normalized.append(n)
-        print(f"🎯 特化ジャンル（{'/'.join(cfg.focus_keywords)}）: ランキング {len(focus_ranks)}件")
+    # 3) 特化カテゴリ（NTR / ハード系 / 素人 など）: 全体の人気上位に入らない作品も集め、カテゴリ内のランキングを別に記録する
+    cat_ranks: dict[str, list[dict[str, Any]]] = {}
+    degraded = False   # 一部のカテゴリが集められなかった（終了コードを1にして気づけるようにする）
+    for cat in cfg.categories:
+        res = collect_category(cfg, cat, mode, gte, min_ratio)
+        if res is None:
+            degraded = True
+            continue
+        cat_items, cat_rank, complete = res
+        normalized.extend(cat_items)
+        if complete or mode == "backfill":
+            cat_ranks[cat.slug] = cat_rank
+        else:
+            print(f"⚠️ カテゴリ「{cat.slug}」: 人気順の取得が不足しているため、順位は保存しません（作品の取り込みは行います）。", file=sys.stderr)
+            degraded = True
+        print(f"🎯 {cat.label}（{cat.slug}）: 取り込み {len(cat_items)}件 / ランキング {len(cat_rank)}件")
 
     items = dedupe(normalized)
     print(f"📦 取得 {len(ranked_raw)}件(人気) → 取り込み対象 {len(items)}件 / ランキング {len(ranks)}件")
@@ -459,24 +569,68 @@ def run(mode: str, dry_run: bool) -> int:
     except RuntimeError as e:
         print(f"❌ {e}", file=sys.stderr)
         return 1
-    if focus_ranks:
+    # カテゴリごとのランキング。旧版のプラグインに送ると全体のランキングを上書きしてしまうため、
+    # サイト側がそのカテゴリに対応していることを確かめてから送る
+    info = wp_get(wp, "ping") or {}
+    site_cats = set(info.get("cats") or [])
+    for cat in cfg.categories:
+        ranks_c = cat_ranks.get(cat.slug)
+        if not ranks_c:
+            continue
+        if not cat.primary and cat.slug not in site_cats:
+            print(f"⚠️ サイト側にカテゴリ「{cat.slug}」がありません（プラグインが v1.6.0 より古い、または AV_HUB_CATS に未登録）。"
+                  "順位は保存せずスキップします。", file=sys.stderr)
+            degraded = True
+            continue
+        payload: dict[str, Any] = {"day": today.strftime("%Y-%m-%d"), "ranks": ranks_c, "cat": cat.slug}
+        if cat.primary:
+            payload["focus"] = True   # 旧版のプラグインでも、従来の特化ランキングに保存される
         try:
-            res = wp.post("rank", {"day": today.strftime("%Y-%m-%d"), "ranks": focus_ranks, "focus": True})
-            print(f"✅ 特化ランキング保存 {res.get('saved')}件 ({res.get('day')})")
+            res = wp.post("rank", payload)
+            print(f"✅ {cat.label}ランキング保存 {res.get('saved')}件 ({res.get('day')})")
         except RuntimeError as e:
             print(f"❌ {e}", file=sys.stderr)
             return 1
-    return 1 if failed else 0
+    return 1 if (failed or degraded) else 0
+
+
+def check_categories(cfg: Config) -> int:
+    """content/categories.json の設定を DMM API で確認する（WordPress には送らない）。"""
+    bad = 0
+    print(f"📋 カテゴリ {len(cfg.categories)}件（content/categories.json）")
+    for cat in cfg.categories:
+        print(f"\n■ {cat.label}（/av/{cat.slug}/）floor={cat.floor}" + ("  [primary]" if cat.primary else ""))
+        article_id: str | None = None
+        if cat.genre_name:
+            article_id, cands = resolve_genre_id(cfg, cat.floor, cat.genre_name)
+            if not article_id:
+                print(f"  ❌ ジャンル「{cat.genre_name}」のIDを特定できません。候補: {' / '.join(cands) or 'なし'}")
+                bad += 1
+                continue
+            print(f"  ジャンル「{cat.genre_name}」→ ID {article_id}（一致: {' / '.join(cands)}）")
+        raw = fetch_items(cfg, "rank", 5, keyword=cat.keywords[0] if cat.keywords else None, floor=cat.floor, article_id=article_id)
+        if not raw:
+            print("  ❌ 作品を取得できませんでした（floor・キーワード・ジャンルの指定を確認してください）。")
+            bad += 1
+            continue
+        kept = [normalize(r, cfg, extra_genre=cat.add_genre) for r in raw]
+        print(f"  人気上位 {len(raw)}件を取得（取り込み対象 {sum(1 for k in kept if k)}件）")
+        for k in [k for k in kept if k][:3]:
+            print(f"   - {k['title'][:30]}… / ジャンル: {', '.join(k['genres'][:5])}")
+    print("\n" + ("✅ すべて取得できました。" if not bad else f"❌ {bad}件のカテゴリに問題があります。"))
+    return 1 if bad else 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="FANZA→WordPress AVハブ同期")
-    ap.add_argument("--mode", choices=("daily", "backfill", "check"), default="daily",
-                    help="check=WordPressとの接続・認証の診断だけを行う")
+    ap.add_argument("--mode", choices=("daily", "backfill", "check", "cats"), default="daily",
+                    help="check=WordPressとの接続・認証の診断だけを行う / cats=特化カテゴリの設定をDMM APIで確認する")
     ap.add_argument("--dry-run", action="store_true", help="WPへ送信せず、取得結果だけ確認する")
     args = ap.parse_args()
     if args.mode == "check":
         return check_wp(load_config(need_wp=True, need_dmm=False))
+    if args.mode == "cats":
+        return check_categories(load_config(need_wp=False))
     return run(args.mode, args.dry_run)
 
 

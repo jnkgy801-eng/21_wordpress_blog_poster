@@ -7,11 +7,13 @@ Bluesky の API は無料で、アプリパスワードだけで投稿できま�
 
 環境変数
   WP_URL              サイトのURL（必須）
+  BSKY_CATS           投稿するカテゴリ（カンマ区切りのslug）。未設定なら content/categories.json の全カテゴリを、カテゴリごとに1投稿ずつ。
+                      all=サイト全体のランキング / rotate=毎日1カテゴリずつ順番に（例: BSKY_CATS=rotate、BSKY_CATS=ntr,all）
   BSKY_HANDLE         例 yourname.bsky.social（投稿時は必須）
   BSKY_APP_PASSWORD   Bluesky の「アプリパスワード」（投稿時は必須。通常のパスワードは使わない）
   BSKY_SERVICE        既定 https://bsky.social
   BSKY_LABEL          投稿に付ける自己申告ラベル。porn / sexual / nudity / graphic-media（既定 porn）
-  BSKY_DAYS           1=前日比（日次）/ 7=週間（既定 1）
+  BSKY_DAYS           比較する日数。7=1週間前との比較（既定） / 1=前日比
   FOCUS, MASK_WORDS, ACCENT, HASHTAGS, OUT_DIR は av_weekly_card.py と同じ
 
 使い方
@@ -27,7 +29,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -35,6 +37,7 @@ import requests
 from PIL import Image
 
 import av_weekly_card as card
+from categories import Category, load_categories
 from social_filter import filter_rows
 
 MAX_GRAPHEMES = 300          # Bluesky の投稿文の上限
@@ -167,9 +170,9 @@ def alt_text(heading: str, rows: list[dict[str, Any]], words: list[str]) -> str:
     return (heading + "。" + " / ".join(parts))[:MAX_ALT_CHARS]
 
 
-def build_cards(data: dict[str, Any], words: list[str], accent: tuple[int, int, int], out: Path) -> tuple[list[tuple[Path, str]], bool, bool, int]:
+def build_cards(data: dict[str, Any], words: list[str], accent: tuple[int, int, int], out: Path, tag: str = "") -> tuple[list[tuple[Path, str]], bool, bool, int]:
     """投稿用の画像カードを作る。戻り値: ([(画像パス, 代替テキスト)], 急上昇あり, 値下がりあり, 1枚目の掲載件数)。"""
-    stamp = datetime.now().strftime("%Y%m%d")
+    stamp = (f"{tag}_" if tag else "") + datetime.now().strftime("%Y%m%d")
     # 外部サービスに載せられないタイトルは、画像に入れる前に除く
     movers = filter_rows(data.get("movers") or [])
     top = filter_rows(data.get("top") or [])
@@ -197,51 +200,50 @@ def build_cards(data: dict[str, Any], words: list[str], accent: tuple[int, int, 
     return cards, has_movers, has_drops, n_main
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="AVハブ → Bluesky 自動投稿")
-    ap.add_argument("--dry-run", action="store_true", help="画像と文章を作るだけで、投稿しない")
-    args = ap.parse_args()
+def choose_targets(spec: str, cats: tuple[Category, ...], today: date) -> list[str]:
+    """投稿する対象（カテゴリのslug。空文字=サイト全体）を決める。"""
+    spec = spec.strip()
+    slugs = [c.slug for c in cats]
+    if not spec:
+        return slugs or [""]
+    if spec == "rotate":
+        pool = slugs + [""]            # 全体も順番に含める
+        return [pool[today.toordinal() % len(pool)]]
+    out: list[str] = []
+    for t in (x.strip() for x in spec.split(",") if x.strip()):
+        out.append("" if t == "all" else t)
+    return list(dict.fromkeys(out))
 
-    # GitHub Actions は未設定の vars を「空文字」で渡す。空のときも既定値 d を使う
-    env = lambda k, d="": os.environ.get(k, "").strip() or d  # noqa: E731
-    site = env("WP_URL").rstrip("/")
-    if not site:
-        sys.exit("❌ WP_URL が未設定です。")
-    label = env("BSKY_LABEL", "porn")
-    if label not in VALID_LABELS:
-        sys.exit(f"❌ BSKY_LABEL は {sorted(VALID_LABELS)} のどれかにしてください（現在: {label}）。")
-    try:
-        days = int(env("BSKY_DAYS", "1"))
-    except ValueError:
-        sys.exit("❌ BSKY_DAYS は整数（1 または 7）で指定してください。")
 
-    out = Path(env("OUT_DIR", "out"))
-    out.mkdir(parents=True, exist_ok=True)
-    words = [w.strip() for w in env("MASK_WORDS").split(",") if w.strip()]
-    accent = card.hex_to_rgb(env("ACCENT", "#6366f1"))
-    hashtags = env("HASHTAGS", "#NTR #寝取られ")
-
-    data = card.fetch(site, env("FOCUS", "1") != "0", days)
-    cards, has_movers, has_drops, n_main = build_cards(data, words, accent, out)
+def post_target(site: str, slug: str, cats: tuple[Category, ...], args: argparse.Namespace, out: Path,
+                words: list[str], accent: tuple[int, int, int], days: int, label: str, default_tags: str) -> int:
+    """1つの対象（カテゴリまたはサイト全体）の投稿を作って送る。戻り値: 0=成功/対象なし, 1=失敗。"""
+    cat = next((c for c in cats if c.slug == slug), None)
+    name = slug or "all"
+    data = card.fetch(site, bool(slug), days, slug)
+    if slug and data.get("cat") != slug:
+        print(f"⚠️ [{name}] サイト側にこのカテゴリがありません（プラグインが v1.6.0 より古い、または AV_HUB_CATS に未登録）。スキップします。")
+        return 1
+    cards, has_movers, has_drops, n_main = build_cards(data, words, accent, out, tag=name)
     if not cards:
-        print("ℹ️ 投稿できるデータが足りないため、今回は投稿しません（ランキング・価格の記録がたまるまで待つか、除外された作品が多い可能性があります）。")
+        print(f"ℹ️ [{name}] 投稿できるデータが足りないため、今回は投稿しません。")
         return 0
-
+    tags = (cat.hashtags if cat and cat.hashtags else default_tags)
     # make_post_text は「TOP5」固定のため、除外で件数が減ったときはカードの件数に合わせる
-    text = fit_text(card.make_post_text(data, has_movers, has_drops, hashtags).replace("TOP5", f"TOP{n_main}"))
-    (out / "bsky_post.txt").write_text(text, encoding="utf-8")
-    (out / "bsky_alt.json").write_text(json.dumps([a for _, a in cards], ensure_ascii=False, indent=2), encoding="utf-8")
-    print("📝 投稿文:\n" + text)
+    text = fit_text(card.make_post_text(data, has_movers, has_drops, tags).replace("TOP5", f"TOP{n_main}"))
+    (out / f"bsky_post_{name}.txt").write_text(text, encoding="utf-8")
+    (out / f"bsky_alt_{name}.json").write_text(json.dumps([a for _, a in cards], ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"📝 [{name}] 投稿文:\n{text}")
     for p, _ in cards:
         print(f"🖼  {p}")
     if args.dry_run:
-        print("ℹ️ --dry-run のため投稿していません。")
+        print(f"ℹ️ [{name}] --dry-run のため投稿していません。")
         return 0
 
-    handle, password = env("BSKY_HANDLE"), env("BSKY_APP_PASSWORD")
+    handle, password = os.environ.get("BSKY_HANDLE", "").strip(), os.environ.get("BSKY_APP_PASSWORD", "").strip()
     if not handle or not password:
         sys.exit("❌ BSKY_HANDLE / BSKY_APP_PASSWORD が未設定です。")
-    service = env("BSKY_SERVICE", "https://bsky.social").rstrip("/")
+    service = (os.environ.get("BSKY_SERVICE", "").strip() or "https://bsky.social").rstrip("/")
     try:
         session = create_session(service, handle, password)
         uploaded: list[tuple[dict[str, Any], str]] = []
@@ -250,9 +252,44 @@ def main() -> int:
             uploaded.append((upload_blob(service, session, data_bytes, mime), alt))
         res = create_post(service, session, text, uploaded, label)
     except (BlueskyError, KeyError) as e:
-        sys.exit(f"❌ Bluesky への投稿に失敗しました: {e}")
-    print(f"✅ 投稿しました: {res.get('uri', '')}")
+        print(f"❌ [{name}] Bluesky への投稿に失敗しました: {e}", file=sys.stderr)
+        return 1
+    print(f"✅ [{name}] 投稿しました: {res.get('uri', '')}")
     return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="AVハブ → Bluesky 自動投稿")
+    ap.add_argument("--dry-run", action="store_true", help="画像と文章を作るだけで、投稿しない")
+    args = ap.parse_args()
+
+    env = lambda k, d="": os.environ.get(k, "").strip() or d  # noqa: E731
+    site = env("WP_URL").rstrip("/")
+    if not site:
+        sys.exit("❌ WP_URL が未設定です。")
+    label = env("BSKY_LABEL", "porn")
+    if label not in VALID_LABELS:
+        sys.exit(f"❌ BSKY_LABEL は {sorted(VALID_LABELS)} のどれかにしてください（現在: {label}）。")
+    try:
+        days = int(env("BSKY_DAYS", "7"))
+    except ValueError:
+        sys.exit("❌ BSKY_DAYS は整数（1 または 7）で指定してください。")
+
+    out = Path(env("OUT_DIR", "out"))
+    out.mkdir(parents=True, exist_ok=True)
+    words = [w.strip() for w in env("MASK_WORDS").split(",") if w.strip()]
+    accent = card.hex_to_rgb(env("ACCENT", "#6366f1"))
+    default_tags = env("HASHTAGS", "#FANZA #AV")
+    cats = load_categories(focus_keywords_env=env("FOCUS_KEYWORDS"))
+    targets = choose_targets(env("BSKY_CATS"), cats, datetime.now().date())
+    print(f"🎯 投稿対象: {', '.join(t or 'all' for t in targets)}（比較日数 {days}）")
+
+    failed = 0
+    for k, slug in enumerate(targets):
+        if k:
+            time.sleep(5)   # 続けて投稿しすぎない
+        failed += post_target(site, slug, cats, args, out, words, accent, days, label, default_tags)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
