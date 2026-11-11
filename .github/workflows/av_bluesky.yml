@@ -15,7 +15,7 @@ on:
         default: '7'
         options: ['7', '1']
       cats:
-        description: '投稿するカテゴリ（カンマ区切り。空=Variables の BSKY_CATS、それも空なら全カテゴリ。all=サイト全体 / rotate=毎日1つ）'
+        description: '投稿するカテゴリ（カンマ区切り。空=Variables の BSKY_CATS、それも空なら全カテゴリ+終了間近のセール。all=サイト全体 / ending=終了間近のセール / rotate=毎日1つ）'
         type: string
         default: ''
 
@@ -53,6 +53,7 @@ jobs:
           BSKY_CATS: ${{ github.event.inputs.cats || vars.BSKY_CATS }}   # 任意。例: ntr,hard / rotate / all。空なら全カテゴリ
           FOCUS_KEYWORDS: ${{ vars.FOCUS_KEYWORDS }}
           HASHTAGS: ${{ vars.WEEKLY_HASHTAGS }}           # 任意。カテゴリに指定がないときのタグ（未設定なら「#FANZA #AV」）
+          ENDING_HASHTAGS: ${{ vars.ENDING_HASHTAGS }}    # 任意。終了間近の投稿のタグ（未設定なら「#FANZA #セール」）
           MASK_WORDS: ${{ vars.WEEKLY_MASK_WORDS }}       # 任意。画像内で伏せたい語（カンマ区切り）
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
