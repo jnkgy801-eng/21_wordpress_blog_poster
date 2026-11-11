@@ -134,6 +134,52 @@ def fetch(site: str, focus: bool, days: int = 7, cat: str = "") -> dict[str, Any
     sys.exit(f"❌ 週次データを取得できません（{last}）。サイトのプラグインが v1.5.0 以上か確認してください（days 指定は v1.5.0 から）。")
 
 
+def fetch_ending(site: str, limit: int = 5, cat: str = "", hours: int = 0) -> dict[str, Any]:
+    """もうすぐ終わるセール（プラグイン v1.9.0 以降の /wp-json/av/v1/ending）。取得できなければ items が空の辞書を返す。"""
+    params = {"limit": str(limit)}
+    if cat:
+        params["cat"] = cat
+    if hours:
+        params["hours"] = str(hours)
+    for url, p in ((f"{site}/wp-json/av/v1/ending", params), (f"{site}/", {**params, "rest_route": "/av/v1/ending"})):
+        try:
+            r = requests.get(url, params=p, timeout=30, headers={"User-Agent": "av-weekly-card/1.0"})
+            if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/json"):
+                return r.json()
+        except (requests.RequestException, ValueError):
+            continue
+    return {"items": []}
+
+
+def ending_card(data: dict[str, Any], rows: list[dict[str, Any]], words: list[str], accent: tuple[int, int, int]) -> Image.Image:
+    """もうすぐ終了のセールのカード（終了が近い順）。残り時間と、そのときの価格を並べる。"""
+    label = data.get("label") or ""
+    img, d = base_canvas(f"もうすぐ終了の{label}セール TOP{len(rows)}", "終了が近い順（終了日時はFANZAの情報・価格は取得時点のもの）", data.get("site", ""), accent)
+    f_t, f_s, f_n, f_b = load_font(30, True), load_font(21), load_font(34, True), load_font(26, True)
+    warm, hot = (251, 191, 36), (248, 113, 113)
+    top, step = 176, 90
+    for i, r in enumerate(rows):
+        y = top + i * step
+        d.rounded_rectangle([40, y, W - 40, y + step - 10], radius=12, fill=CARD)
+        d.ellipse([58, y + 12, 108, y + 62], fill=accent)
+        num = str(i + 1)
+        d.text((83 - d.textlength(num, font=f_n) / 2, y + 17), num, font=f_n, fill=(255, 255, 255))
+        d.text((128, y + 8), fit(d, mask(r["title"], words), f_t, 700), font=f_t, fill=TEXT)
+        score = f"★{r['review_avg']:.1f}（{r['review_cnt']}件）" if r.get("review_avg") and r.get("review_cnt") else "レビュー少なめ"
+        lp = f"・定価{yen(r['list_price'])}" if r.get("list_price") and r.get("price") and r["list_price"] > r["price"] else ""
+        d.text((128, y + 48), f"{score}{lp}", font=f_s, fill=MUTED)
+        remain = str(r.get("remain") or "")
+        urgent = "まもなく" in remain or "時間" in remain
+        d.text((W - 80 - 190 - d.textlength(remain, font=f_b), y + 10), remain, font=f_b, fill=hot if urgent else warm)
+        end_txt = str(r.get("sale_end_text") or "")
+        if end_txt:
+            d.text((W - 80 - 190 - d.textlength(end_txt, font=f_s), y + 48), end_txt, font=f_s, fill=MUTED)
+        price = str(r.get("price_text") or yen(r.get("price")))
+        d.text((W - 70 - d.textlength(price, font=f_b), y + 24), price, font=f_b, fill=TEXT)
+    footer(d, data.get("list_url", data.get("home", "")))
+    return img
+
+
 def base_canvas(title: str, subtitle: str, site: str, accent: tuple[int, int, int]) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)

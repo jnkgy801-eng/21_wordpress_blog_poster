@@ -33,6 +33,7 @@ from requests.auth import HTTPBasicAuth
 
 from age_filter import is_allowed
 from categories import Category, load_categories, parse_floor_id, parse_genres, pick_genre
+from dmm_fields import parse_campaign, parse_deliveries
 
 JST = dt.timezone(dt.timedelta(hours=9))
 DMM_API = "https://api.dmm.com/affiliate/v3/ItemList"
@@ -300,6 +301,9 @@ def normalize(item: Item, cfg: Config, extra_genre: str = "") -> Item | None:
             break
 
     prices = item.get("prices") or {}
+    # prices.price は配信形式のなかで最安の価格（レンタル等を含む）。形式ごとの価格と、セールの終了日も一緒に送る
+    deliveries = parse_deliveries(prices)
+    campaign = parse_campaign(item, dt.datetime.now(JST).replace(tzinfo=None)) or {}
     review = item.get("review") or {}
     try:
         review_avg = float(review.get("average") or 0) or None
@@ -316,6 +320,10 @@ def normalize(item: Item, cfg: Config, extra_genre: str = "") -> Item | None:
         "movie": movie,
         "price": _yen(prices.get("price")),
         "list_price": _yen(prices.get("list_price")),
+        "deliveries": deliveries,
+        "sale_begin": campaign.get("sale_begin", ""),
+        "sale_end": campaign.get("sale_end", ""),
+        "sale_title": campaign.get("sale_title", ""),
         "review_avg": review_avg,
         "review_count": review_count,
         "volume": _yen(item.get("volume")),
@@ -614,9 +622,18 @@ def check_categories(cfg: Config) -> int:
             bad += 1
             continue
         kept = [normalize(r, cfg, extra_genre=cat.add_genre) for r in raw]
-        print(f"  人気上位 {len(raw)}件を取得（取り込み対象 {sum(1 for k in kept if k)}件）")
-        for k in [k for k in kept if k][:3]:
+        ok_items = [k for k in kept if k]
+        print(f"  人気上位 {len(raw)}件を取得（取り込み対象 {len(ok_items)}件）")
+        for k in ok_items[:3]:
+            deli = ", ".join(f"{d['type']}=¥{d['price']:,}" for d in k["deliveries"]) or "（応答に無し）"
+            sale = f"〜{k['sale_end'][5:16]}「{k['sale_title'][:20]}」" if k["sale_end"] else "なし"
             print(f"   - {k['title'][:30]}… / ジャンル: {', '.join(k['genres'][:5])}")
+            print(f"       最安 ¥{k['price'] or 0:,} / 配信形式の価格: {deli} / セール終了: {sale}")
+        n_deli = sum(1 for k in ok_items if k["deliveries"])
+        n_sale = sum(1 for k in ok_items if k["sale_end"])
+        print(f"  配信形式の価格が取れた作品: {n_deli}/{len(ok_items)}件 ／ セール終了日が取れた作品: {n_sale}/{len(ok_items)}件")
+        if ok_items and not n_deli:
+            print("  ⚠️ 応答に配信形式の価格が含まれていません。サイトでは最安の価格だけを表示します。")
     print("\n" + ("✅ すべて取得できました。" if not bad else f"❌ {bad}件のカテゴリに問題があります。"))
     return 1 if bad else 0
 

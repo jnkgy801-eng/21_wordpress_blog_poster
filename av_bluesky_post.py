@@ -8,7 +8,9 @@ Bluesky の API は無料で、アプリパスワードだけで投稿できま�
 環境変数
   WP_URL              サイトのURL（必須）
   BSKY_CATS           投稿するカテゴリ（カンマ区切りのslug）。未設定なら content/categories.json の全カテゴリを、カテゴリごとに1投稿ずつ。
-                      all=サイト全体のランキング / rotate=毎日1カテゴリずつ順番に（例: BSKY_CATS=rotate、BSKY_CATS=ntr,all）
+                      all=サイト全体のランキング / ending=もうすぐ終了のセール / rotate=毎日1つずつ順番に（例: BSKY_CATS=rotate、BSKY_CATS=ntr,all,ending）
+                      未設定のときは、全カテゴリに加えて「もうすぐ終了のセール」も投稿する（終了が近いセールが3件未満の日は投稿しない）
+  ENDING_HASHTAGS     終了間近の投稿のタグ（既定 #FANZA #セール）
   BSKY_HANDLE         例 yourname.bsky.social（投稿時は必須）
   BSKY_APP_PASSWORD   Bluesky の「アプリパスワード」（投稿時は必須。通常のパスワードは使わない）
   BSKY_SERVICE        既定 https://bsky.social
@@ -205,9 +207,9 @@ def choose_targets(spec: str, cats: tuple[Category, ...], today: date) -> list[s
     spec = spec.strip()
     slugs = [c.slug for c in cats]
     if not spec:
-        return slugs or [""]
+        return slugs + [ENDING] if slugs else ["", ENDING]
     if spec == "rotate":
-        pool = slugs + [""]            # 全体も順番に含める
+        pool = slugs + ["", ENDING]    # 全体と、もうすぐ終了のセールも順番に含める
         return [pool[today.toordinal() % len(pool)]]
     out: list[str] = []
     for t in (x.strip() for x in spec.split(",") if x.strip()):
@@ -236,10 +238,14 @@ def post_target(site: str, slug: str, cats: tuple[Category, ...], args: argparse
     print(f"📝 [{name}] 投稿文:\n{text}")
     for p, _ in cards:
         print(f"🖼  {p}")
+    return publish(args, name, text, cards, label)
+
+
+def publish(args: argparse.Namespace, name: str, text: str, cards: list[tuple[Path, str]], label: str) -> int:
+    """画像つきの投稿を送る（--dry-run なら送らない）。戻り値: 0=成功, 1=失敗。"""
     if args.dry_run:
         print(f"ℹ️ [{name}] --dry-run のため投稿していません。")
         return 0
-
     handle, password = os.environ.get("BSKY_HANDLE", "").strip(), os.environ.get("BSKY_APP_PASSWORD", "").strip()
     if not handle or not password:
         sys.exit("❌ BSKY_HANDLE / BSKY_APP_PASSWORD が未設定です。")
@@ -256,6 +262,32 @@ def post_target(site: str, slug: str, cats: tuple[Category, ...], args: argparse
         return 1
     print(f"✅ [{name}] 投稿しました: {res.get('uri', '')}")
     return 0
+
+
+ENDING = "ending"   # BSKY_CATS で「もうすぐ終了のセール」を指す語（カテゴリの slug とは衝突しない予約語）
+
+
+def post_ending(site: str, args: argparse.Namespace, out: Path, words: list[str], accent: tuple[int, int, int], label: str, tags: str) -> int:
+    """もうすぐ終わるセールの投稿。締め切りがあるぶん反応が出やすい。対象が3件未満なら投稿しない。"""
+    data = card.fetch_ending(site, limit=5)
+    rows = filter_rows(data.get("items") or [])   # 外部サービスに載せられないタイトルは除く
+    if len(rows) < 3:
+        print("ℹ️ [ending] 終了が近いセールが3件未満のため、今回は投稿しません。")
+        return 0
+    p = out / f"bsky_ending_{datetime.now().strftime('%Y%m%d')}.png"
+    card.ending_card(data, rows, words, accent).save(p)
+    first = rows[0].get("sale_end_text") or ""
+    lines = [f"【もうすぐ終了】セール終了が近い作品 TOP{len(rows)}"]
+    if first:
+        lines.append(f"いちばん早い終了は {first}")
+    lines += ["セールが終わると価格が戻ります↓", str(data.get("list_url") or data.get("home") or "")]
+    if tags:
+        lines.append(tags)
+    text = fit_text("\n".join(lines))
+    (out / "bsky_post_ending.txt").write_text(text, encoding="utf-8")
+    alt = alt_text("もうすぐ終了のセール", rows, words)
+    print(f"📝 [ending] 投稿文:\n{text}\n🖼  {p}")
+    return publish(args, "ending", text, [(p, alt)], label)
 
 
 def main() -> int:
@@ -288,7 +320,10 @@ def main() -> int:
     for k, slug in enumerate(targets):
         if k:
             time.sleep(5)   # 続けて投稿しすぎない
-        failed += post_target(site, slug, cats, args, out, words, accent, days, label, default_tags)
+        if slug == ENDING:
+            failed += post_ending(site, args, out, words, accent, label, env("ENDING_HASHTAGS", "#FANZA #セール"))
+        else:
+            failed += post_target(site, slug, cats, args, out, words, accent, days, label, default_tags)
     return 1 if failed else 0
 
 

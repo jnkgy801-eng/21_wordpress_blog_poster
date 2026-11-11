@@ -16,7 +16,8 @@ FLOOR_RE = re.compile(r"^[a-z0-9_]{2,30}$")
 # サイト側（プラグイン）で URL に使えない語。/av/{slug}/ と衝突する
 RESERVED_SLUGS = frozenset({
     "new", "rank", "trend", "hot", "best", "lowest", "sale", "about", "gems", "buzz",
-    "log", "pick", "search", "later", "genre", "actress", "maker", "work",
+    "log", "pick", "search", "later", "genre", "actress", "maker", "work", "buy", "budget", "oshi",
+    "ending", "swipe", "month", "feed",
 })
 DEFAULT_PATH = Path(__file__).with_name("content") / "categories.json"
 
