@@ -16,6 +16,10 @@ on:
         description: 'true=照合結果の確認だけ（書き込まない）。まずtrueで確認してください'
         type: boolean
         default: true
+      top:
+        description: '「作品数」の多い上位N行だけ登録する（空=全行。例: 20）'
+        type: string
+        default: ''
       overwrite:
         description: 'true=記入済みの紹介文も上書きする（通常はfalse）'
         type: boolean
@@ -68,9 +72,11 @@ jobs:
           IN_FILE: ${{ github.event.inputs.file }}
           IN_TYPE: ${{ github.event.inputs.type }}
           IN_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          IN_TOP: ${{ github.event.inputs.top }}
           IN_OVERWRITE: ${{ github.event.inputs.overwrite }}
         run: |
           ARGS=(--file "$IN_FILE" --type "$IN_TYPE")
           if [ "$IN_DRY_RUN" = "true" ]; then ARGS+=(--dry-run); fi
           if [ "$IN_OVERWRITE" = "true" ]; then ARGS+=(--overwrite); fi
+          if [ -n "$IN_TOP" ]; then ARGS+=(--top "$IN_TOP"); fi
           python av_intro_import.py "${ARGS[@]}"

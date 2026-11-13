@@ -48,6 +48,12 @@ jobs:
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           EXTRA_EXCLUDE: ${{ vars.EXTRA_EXCLUDE }}
           FOCUS_KEYWORDS: ${{ vars.FOCUS_KEYWORDS }}   # 任意。NTR（primary）の語を上書き。特化カテゴリの定義は content/categories.json
+          # 以下は任意（未設定なら av_sync.py の既定値）。取り込む量を調整したいときだけ Variables に登録する
+          RANK_TOP_N: ${{ vars.RANK_TOP_N }}       # ランキングとして保存する件数（既定100）
+          REFRESH_N: ${{ vars.REFRESH_N }}         # 価格・レビューを毎日更新する人気上位の件数（既定300）
+          NEW_DAYS: ${{ vars.NEW_DAYS }}           # 新着として遡る日数（既定14）
+          NEW_MAX: ${{ vars.NEW_MAX }}             # 新着の最大取り込み件数（既定300）
+          FOCUS_N: ${{ vars.FOCUS_N }}             # 特化カテゴリごとの取り込み件数（既定200）
           # 入力値はシェルに直接埋め込まず、環境変数として渡す（コマンド注入の防止）
           MODE: ${{ github.event.inputs.mode || 'daily' }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
