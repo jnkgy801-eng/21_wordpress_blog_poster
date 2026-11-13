@@ -1,5 +1,5 @@
 {
-  "_readme": "特化カテゴリ（サイトのヘッダーのタブ）の定義。slug はサイト側 av_hub_mu_plugin.php の AV_HUB_CATS と同じにする。floor: videoa=ビデオ / videoc=素人。集め方は keywords（キーワード検索）/ genre_name（FANZAのジャンル名。IDは実行時にAPIで引く）/ floor だけ（そのフロアの全作品）のどれか。add_genre は、取り込む作品にそのジャンル名を付け足す（フロアで集めるとき、サイト側の判定語と揃えるため）。primary は従来の特化ジャンル（NTR）に1つだけ付ける。",
+  "_readme": "特化カテゴリ（サイトのヘッダーのタブ）の定義。slug はサイト側 av_hub_mu_plugin.php の AV_HUB_CATS と同じにする。floor: videoa=ビデオ / videoc=素人。集め方は keywords（キーワード検索）/ genre_name（FANZAのジャンル名。IDは実行時にAPIで引く）/ floor だけ（そのフロアの全作品）のどれか。add_genre は、取り込む作品にそのジャンル名を付け足す（フロアで集めるとき、サイト側の判定語と揃えるため）。primary は従来の特化ジャンル（NTR）に1つだけ付ける。min_reviews は、レビュー件数がこれ未満の作品を取り込まない（0または省略=制限なし）。fetch_new を false にすると新着を集めず、人気順だけ集める。enabled を false にすると、このカテゴリの取り込み・ランキング・Bluesky投稿をすべて止める（タブ自体を消すにはサイト側の AV_HUB_CATS も直す）。",
   "categories": [
     {
       "slug": "ntr",
@@ -21,6 +21,8 @@
       "label": "素人",
       "floor": "videoc",
       "add_genre": "素人",
+      "min_reviews": 3,
+      "fetch_new": false,
       "hashtags": "#素人"
     }
   ]
