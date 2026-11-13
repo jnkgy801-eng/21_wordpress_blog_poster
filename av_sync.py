@@ -13,6 +13,7 @@ FANZA動画（AV）→ WordPress（AVハブ）同期スクリプト。GitHub Act
 任意:
   RANK_TOP_N(既定100) REFRESH_N(既定300) NEW_DAYS(既定14) NEW_MAX(既定300) BACKFILL_N(既定2000) EXTRA_EXCLUDE
   特化カテゴリ（NTR / ハード系 / 素人 など）は content/categories.json で定義する。カテゴリごとに、集めた作品と、カテゴリ内の人気ランキングを記録する。
+  カテゴリごとの min_reviews（レビュー件数の下限）/ fetch_new（新着を集めるか）/ enabled（使うか）も categories.json で指定できる。
   FOCUS_KEYWORDS(従来の特化ジャンル=primary の語を上書き。「-」にすると primary のカテゴリを取得しない)
   FOCUS_N(既定200) FOCUS_BACKFILL_N(既定1000) FOCUS_RANK_N(既定100)  ※カテゴリごとの n / rank_n で個別に変えられる
 """
@@ -32,7 +33,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 from age_filter import is_allowed
-from categories import Category, load_categories, parse_floor_id, parse_genres, pick_genre
+from categories import Category, load_categories, parse_floor_id, parse_genres, passes_review_gate, pick_genre
 from dmm_fields import parse_campaign, parse_deliveries
 
 JST = dt.timezone(dt.timedelta(hours=9))
@@ -210,20 +211,34 @@ def collect_category(cfg: Config, cat: Category, mode: str, gte: str, min_ratio:
 
     items: list[Item] = []
     ranks: list[dict[str, Any]] = []
+    gated = 0   # min_reviews に満たず、取り込まなかった件数
     raw_rank = fetch_items(cfg, "rank", n, keyword=kw0, floor=cat.floor, article_id=article_id)
     for pos, raw in enumerate(raw_rank, start=1):
         it = normalize(raw, cfg, extra_genre=cat.add_genre)
         if it is None:
             continue
+        if not passes_review_gate(cat, it.get("review_count")):
+            gated += 1
+            continue
         items.append(it)
         if pos <= rank_n:
             ranks.append({"cid": it["cid"], "pos": pos})
     complete = len(raw_rank) >= int(rank_n * min_ratio)
-    for kw in (cat.keywords or (None,)):
-        for raw in fetch_items(cfg, "date", new_limit, gte_date=gte, keyword=kw, floor=cat.floor, article_id=article_id):
-            it = normalize(raw, cfg, extra_genre=cat.add_genre)
-            if it is not None:
+    if cat.fetch_new:
+        for kw in (cat.keywords or (None,)):
+            for raw in fetch_items(cfg, "date", new_limit, gte_date=gte, keyword=kw, floor=cat.floor, article_id=article_id):
+                it = normalize(raw, cfg, extra_genre=cat.add_genre)
+                if it is None:
+                    continue
+                if not passes_review_gate(cat, it.get("review_count")):
+                    gated += 1
+                    continue
                 items.append(it)
+    if cat.min_reviews:
+        print(f"🧹 {cat.label}: レビュー{cat.min_reviews}件未満のため除外 {gated}件 / 取り込み {len(items)}件")
+        if not items and raw_rank:
+            print(f"⚠️ カテゴリ「{cat.slug}」: min_reviews={cat.min_reviews} で全作品が除外されました。"
+                  "このフロアのAPI応答にレビューが含まれない可能性があります。`--mode cats` で確認してください。", file=sys.stderr)
     return items, ranks, complete
 
 
@@ -616,19 +631,27 @@ def check_categories(cfg: Config) -> int:
                 bad += 1
                 continue
             print(f"  ジャンル「{cat.genre_name}」→ ID {article_id}（一致: {' / '.join(cands)}）")
-        raw = fetch_items(cfg, "rank", 5, keyword=cat.keywords[0] if cat.keywords else None, floor=cat.floor, article_id=article_id)
+        raw = fetch_items(cfg, "rank", 20, keyword=cat.keywords[0] if cat.keywords else None, floor=cat.floor, article_id=article_id)
         if not raw:
             print("  ❌ 作品を取得できませんでした（floor・キーワード・ジャンルの指定を確認してください）。")
             bad += 1
             continue
         kept = [normalize(r, cfg, extra_genre=cat.add_genre) for r in raw]
         ok_items = [k for k in kept if k]
-        print(f"  人気上位 {len(raw)}件を取得（取り込み対象 {len(ok_items)}件）")
+        print(f"  人気上位 {len(raw)}件を取得（年齢フィルター通過 {len(ok_items)}件）")
         for k in ok_items[:3]:
             deli = ", ".join(f"{d['type']}=¥{d['price']:,}" for d in k["deliveries"]) or "（応答に無し）"
             sale = f"〜{k['sale_end'][5:16]}「{k['sale_title'][:20]}」" if k["sale_end"] else "なし"
             print(f"   - {k['title'][:30]}… / ジャンル: {', '.join(k['genres'][:5])}")
             print(f"       最安 ¥{k['price'] or 0:,} / 配信形式の価格: {deli} / セール終了: {sale}")
+        n_rev = sum(1 for k in ok_items if k["review_count"])
+        print(f"  レビューが付いている作品: {n_rev}/{len(ok_items)}件")
+        if cat.min_reviews:
+            n_pass = sum(1 for k in ok_items if passes_review_gate(cat, k["review_count"]))
+            print(f"  min_reviews={cat.min_reviews} を満たす作品: {n_pass}/{len(ok_items)}件"
+                  + ("" if n_pass else "  ⚠️ 0件です。基準を下げるか、レビューの付くフロアか確認してください。"))
+        if not cat.fetch_new:
+            print("  新着の取り込み: しない（fetch_new=false）")
         n_deli = sum(1 for k in ok_items if k["deliveries"])
         n_sale = sum(1 for k in ok_items if k["sale_end"])
         print(f"  配信形式の価格が取れた作品: {n_deli}/{len(ok_items)}件 ／ セール終了日が取れた作品: {n_sale}/{len(ok_items)}件")

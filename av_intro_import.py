@@ -5,6 +5,7 @@ CSV（Excelで作った一覧）から、ジャンル/女優/メーカーの紹�
   python av_intro_import.py --file content/genre_list.csv --dry-run          # 照合結果の確認だけ（書き込まない）
   python av_intro_import.py --file content/genre_list.csv                    # 登録（記入済みの紹介文は上書きしない）
   python av_intro_import.py --file content/genre_list.csv --overwrite        # 記入済みも上書きする
+  python av_intro_import.py --file content/genre_list.csv --top 20           # 「作品数」の多い上位20件だけ登録する
 
 CSVの規則:
   ・1行目は見出し。名前の列は、ジャンル=「ジャンル名」/ 女優=「女優名」/ メーカー=「メーカー名」（--name-col で変更可）
@@ -21,6 +22,7 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,17 @@ def read_csv(path: Path) -> list[dict[str, str]]:
     return [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in rows]
 
 
+def to_number(text: str) -> float:
+    """「3,015」「3015件」のようなセルから数値を取る。数字が無ければ 0。"""
+    m = re.search(r"\d[\d,]*(?:\.\d+)?", text or "")
+    return float(m.group().replace(",", "")) if m else 0.0
+
+
+def pick_top(rows: list[dict[str, str]], sort_col: str, n: int) -> list[dict[str, str]]:
+    """sort_col の数値が大きい順に、上位 n 行を返す（同じ値は元の並びのまま）。"""
+    return sorted(rows, key=lambda r: to_number(r.get(sort_col, "")), reverse=True)[:n]
+
+
 def build_intro(row: dict[str, str], name_col: str, lead_col: str, ignore: set[str]) -> str:
     """導入文 + 【ラベル】行 の紹介文を組み立てる（サイト側がこの形式を読みやすく整形する）。"""
     lead = " ".join(row.get(lead_col, "").split())
@@ -72,6 +85,8 @@ def main() -> int:
     ap.add_argument("--name-col", help="名前の列の見出し（既定: 種類に応じて ジャンル名/女優名/メーカー名）")
     ap.add_argument("--lead-col", default="説明", help="導入文にする列（既定: 説明）")
     ap.add_argument("--ignore", default="作品数", help="使わない列（カンマ区切り。既定: 作品数）")
+    ap.add_argument("--top", type=int, default=0, help="--sort-col の数値が大きい順に、上位N行だけを登録する（0=全行）")
+    ap.add_argument("--sort-col", default="作品数", help="--top で並べ替えに使う列（既定: 作品数）")
     ap.add_argument("--overwrite", action="store_true", help="記入済みの紹介文も上書きする")
     ap.add_argument("--dry-run", action="store_true", help="照合結果だけ確認し、書き込まない")
     args = ap.parse_args()
@@ -82,6 +97,16 @@ def main() -> int:
         print(f"⚠️ 見出し『{name_col}』が無いため、1列目『{next(iter(rows[0]))}』を名前として使います。")
         name_col = next(iter(rows[0]))
     ignore = {c.strip() for c in args.ignore.split(",") if c.strip()}
+
+    if args.top < 0:
+        print("❌ --top は0以上の整数にしてください", file=sys.stderr)
+        return 1
+    if args.top:
+        if args.sort_col not in rows[0]:
+            print(f"❌ --top の並べ替えに使う列『{args.sort_col}』がCSVにありません（列: {list(rows[0])}）", file=sys.stderr)
+            return 1
+        rows = pick_top(rows, args.sort_col, args.top)
+        print(f"🔝 『{args.sort_col}』の多い上位{len(rows)}行だけを対象にします: " + "、".join(r.get(name_col, "") for r in rows[:10]) + ("…" if len(rows) > 10 else ""))
 
     # 見出し（ラベル）の長さチェック
     labels = [c for c in rows[0] if c and c not in (name_col, args.lead_col) and c not in ignore]

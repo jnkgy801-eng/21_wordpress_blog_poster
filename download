@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 画像・投稿文の出力先（av_weekly_card.py / av_bluesky_post.py が作る）
+out/
+
+# 秘密情報は GitHub の Secrets に入れる。ファイルには置かない
+.env

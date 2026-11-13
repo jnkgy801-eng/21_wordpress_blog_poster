@@ -34,6 +34,9 @@ class Category:
     hashtags: str = ""               # Bluesky 投稿のハッシュタグ
     n: int | None = None             # 取り込む件数（未指定なら FOCUS_N）
     rank_n: int | None = None        # ランキングとして記録する件数（未指定なら FOCUS_RANK_N）
+    min_reviews: int = 0             # レビュー件数がこれ未満の作品は取り込まない（0=制限なし）。素人系など、情報の少ない作品を除くため
+    fetch_new: bool = True           # False にすると新着の取り込みを行わない（人気順だけ集める）
+    enabled: bool = True             # False にすると、取り込み・ランキング・Bluesky投稿のすべてで、このカテゴリを使わない
 
 
 class CategoryError(ValueError):
@@ -44,6 +47,20 @@ def _clean_list(v: Any) -> tuple[str, ...]:
     if isinstance(v, str):
         v = [x for x in v.split(",")]
     return tuple(str(x).strip() for x in (v or []) if str(x).strip() and str(x).strip() != "-")
+
+
+def _as_bool(v: Any, default: bool) -> bool:
+    """JSON の true/false だけでなく、"false" や 0 のような書き間違いも意図どおりに読む。"""
+    if v is None:
+        return default
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "0", "false", "no", "off", "-")
+    return bool(v)
+
+
+def passes_review_gate(cat: Category, review_count: int | None) -> bool:
+    """カテゴリの min_reviews を満たす作品か。レビューが無い（None）作品は 0 件として扱う。"""
+    return (review_count or 0) >= cat.min_reviews
 
 
 def parse_categories(data: dict[str, Any]) -> tuple[Category, ...]:
@@ -69,6 +86,12 @@ def parse_categories(data: dict[str, Any]) -> tuple[Category, ...]:
         floor = str(r.get("floor", "videoa")).strip()
         if not FLOOR_RE.match(floor):
             raise CategoryError(f"{slug}: floor「{floor}」が不正です（例: videoa / videoc）。")
+        try:
+            min_reviews = int(r.get("min_reviews") or 0)
+        except (TypeError, ValueError):
+            raise CategoryError(f"{slug}: min_reviews は0以上の整数にしてください。") from None
+        if min_reviews < 0:
+            raise CategoryError(f"{slug}: min_reviews は0以上の整数にしてください。")
         out.append(Category(
             slug=slug,
             label=label,
@@ -80,6 +103,9 @@ def parse_categories(data: dict[str, Any]) -> tuple[Category, ...]:
             hashtags=str(r.get("hashtags", "")).strip(),
             n=int(r["n"]) if r.get("n") else None,
             rank_n=min(int(r["rank_n"]), 100) if r.get("rank_n") else None,
+            min_reviews=min_reviews,
+            fetch_new=_as_bool(r.get("fetch_new"), True),
+            enabled=_as_bool(r.get("enabled"), True),
         ))
     if sum(c.primary for c in out) > 1:
         raise CategoryError("primary は1つのカテゴリだけに付けてください。")
@@ -91,10 +117,12 @@ def load_categories(path: Path | None = None, focus_keywords_env: str = "") -> t
 
     focus_keywords_env: 環境変数 FOCUS_KEYWORDS。primary のカテゴリの keywords を上書きする。
     「-」だけなら primary のカテゴリを無効にする（従来の仕様）。
+    enabled=false のカテゴリは、ここで取り除く（取り込み・ランキング・Bluesky投稿のすべてに渡らない）。
     """
     p = path or DEFAULT_PATH
     if p.exists():
         cats = list(parse_categories(json.loads(p.read_text(encoding="utf-8"))))
+        cats = [c for c in cats if c.enabled]      # enabled=false のカテゴリは、以降どの処理にも渡さない
     else:
         cats = [Category(slug="ntr", label="NTR", keywords=("寝取り", "寝取られ", "NTR"), primary=True,
                          hashtags="#NTR #寝取られ")]
