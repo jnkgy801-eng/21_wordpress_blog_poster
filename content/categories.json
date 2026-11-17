@@ -24,6 +24,51 @@
       "min_reviews": 3,
       "fetch_new": false,
       "hashtags": "#素人"
+    },
+    {
+      "slug": "kyonyu",
+      "label": "巨乳",
+      "floor": "videoa",
+      "genre_name": "巨乳",
+      "min_reviews": 3,
+      "fetch_new": false,
+      "hashtags": "#巨乳"
+    },
+    {
+      "slug": "hitozuma",
+      "label": "人妻・主婦",
+      "floor": "videoa",
+      "genre_name": "人妻・主婦",
+      "min_reviews": 3,
+      "fetch_new": false,
+      "hashtags": "#人妻 #主婦"
+    },
+    {
+      "slug": "jukujo",
+      "label": "熟女",
+      "floor": "videoa",
+      "genre_name": "熟女",
+      "min_reviews": 3,
+      "fetch_new": false,
+      "hashtags": "#熟女"
+    },
+    {
+      "slug": "chijo",
+      "label": "痴女",
+      "floor": "videoa",
+      "genre_name": "痴女",
+      "min_reviews": 3,
+      "fetch_new": false,
+      "hashtags": "#痴女"
+    },
+    {
+      "slug": "nakadashi",
+      "label": "中出し",
+      "floor": "videoa",
+      "genre_name": "中出し",
+      "min_reviews": 3,
+      "fetch_new": false,
+      "hashtags": "#中出し"
     }
   ]
 }
