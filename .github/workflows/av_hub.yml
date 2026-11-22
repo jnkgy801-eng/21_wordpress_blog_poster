@@ -1,0 +1,175 @@
+name: AVハブ（同期・Bluesky・紹介文）
+
+on:
+  schedule:
+    - cron: '0 20 * * *'    # 毎日 05:00 JST 同期（ランキングの日次スナップショット）
+    - cron: '0 8 * * *'     # 毎日 17:00 JST 同期（新着の追加取り込み）
+    - cron: '30 21 * * *'   # 毎日 06:30 JST Bluesky 投稿（05:00 の同期が終わったあと）
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'sync=同期 / check=WordPress接続の診断 / cats=カテゴリ設定の確認 / bluesky=Bluesky投稿 / intro=紹介文CSVの取り込み'
+        type: choice
+        default: sync
+        options: [sync, check, cats, bluesky, intro]
+      dry_run:
+        description: 'true=WordPressへ送らず・投稿せず、確認だけ（sync / bluesky / intro。check と cats には無関係）。本番は false'
+        type: boolean
+        default: true
+      mode:
+        description: '[sync] daily=日次 / backfill=初回の大量取り込み（1回だけ）'
+        type: choice
+        default: daily
+        options: [daily, backfill]
+      bsky_days:
+        description: '[bluesky] 7=1週間前との比較 / 1=前日比'
+        type: choice
+        default: '7'
+        options: ['7', '1']
+      bsky_cats:
+        description: '[bluesky] 投稿する対象（カンマ区切り。空=Variables の BSKY_CATS、それも空なら全カテゴリ+終了間近のセール。all=サイト全体 / ending=終了間近 / rotate=毎日1つ）'
+        type: string
+        default: ''
+      file:
+        description: '[intro] CSVのパス（リポジトリ内）'
+        type: string
+        default: content/genre_list.csv
+      type:
+        description: '[intro] 種類'
+        type: choice
+        default: genre
+        options: [genre, actress, maker]
+      top:
+        description: '[intro] 「作品数」の多い上位N行だけ登録する（空=全行）'
+        type: string
+        default: ''
+      overwrite:
+        description: '[intro] true=記入済みの紹介文も上書きする（通常は false）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# 同じ処理が重なると、同じ日のランキングを上書きし合ったり二重投稿になるため、種類ごとに1本ずつ実行する
+concurrency:
+  group: av-hub-${{ github.event.inputs.command || (github.event.schedule == '30 21 * * *' && 'bluesky' || 'sync') }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # スケジュール実行は時刻で判定し、手動実行は選んだコマンドを使う
+      - name: 実行するコマンドを決める
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_COMMAND: ${{ github.event.inputs.command }}
+        run: |
+          if [ "$EVENT" = "schedule" ]; then
+            if [ "$SCHEDULE" = "30 21 * * *" ]; then cmd=bluesky; else cmd=sync; fi
+          else
+            cmd="$INPUT_COMMAND"
+          fi
+          echo "command=$cmd" >> "$GITHUB_OUTPUT"
+          echo "▶ $cmd"
+
+      - name: 日本語フォントを入れる（画像カード用）
+        if: steps.plan.outputs.command == 'bluesky'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+
+      - name: 実行
+        env:
+          COMMAND: ${{ steps.plan.outputs.command }}
+          # 入力値はシェルに直接埋め込まず、環境変数として渡す（コマンド注入の防止）
+          IN_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          IN_MODE: ${{ github.event.inputs.mode }}
+          IN_FILE: ${{ github.event.inputs.file }}
+          IN_TYPE: ${{ github.event.inputs.type }}
+          IN_TOP: ${{ github.event.inputs.top }}
+          IN_OVERWRITE: ${{ github.event.inputs.overwrite }}
+          # --- 必須 Secrets ---
+          DMM_API_ID: ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID: ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+          # --- 任意 Variables（未設定なら av_hub.py の既定値）---
+          EXTRA_EXCLUDE: ${{ vars.EXTRA_EXCLUDE }}
+          FOCUS_KEYWORDS: ${{ vars.FOCUS_KEYWORDS }}
+          RANK_TOP_N: ${{ vars.RANK_TOP_N }}
+          REFRESH_N: ${{ vars.REFRESH_N }}
+          NEW_DAYS: ${{ vars.NEW_DAYS }}
+          NEW_MAX: ${{ vars.NEW_MAX }}
+          BACKFILL_N: ${{ vars.BACKFILL_N }}
+          FOCUS_N: ${{ vars.FOCUS_N }}
+          FOCUS_BACKFILL_N: ${{ vars.FOCUS_BACKFILL_N }}
+          FOCUS_RANK_N: ${{ vars.FOCUS_RANK_N }}
+          BSKY_LABEL: ${{ vars.BSKY_LABEL }}
+          BSKY_DAYS: ${{ github.event.inputs.bsky_days || '7' }}
+          BSKY_CATS: ${{ github.event.inputs.bsky_cats || vars.BSKY_CATS }}
+          HASHTAGS: ${{ vars.WEEKLY_HASHTAGS }}
+          ENDING_HASHTAGS: ${{ vars.ENDING_HASHTAGS }}
+          MASK_WORDS: ${{ vars.WEEKLY_MASK_WORDS }}
+        run: |
+          args=("$COMMAND")
+          if [ "$COMMAND" = "sync" ]; then
+            args+=(--mode "${IN_MODE:-daily}")
+          fi
+          if [ "$COMMAND" = "intro" ]; then
+            args+=(--file "$IN_FILE" --type "$IN_TYPE")
+            if [ -n "$IN_TOP" ]; then args+=(--top "$IN_TOP"); fi
+            if [ "$IN_OVERWRITE" = "true" ]; then args+=(--overwrite); fi
+          fi
+          case "$COMMAND" in
+            sync|bluesky|intro)
+              if [ "$IN_DRY_RUN" = "true" ]; then args+=(--dry-run); fi ;;
+          esac
+          python av_hub.py "${args[@]}"
+
+      # Bing / Yandex へ更新ページを通知する（任意）。Variables に INDEXNOW_KEY があるときだけ動き、失敗しても同期は成功扱い
+      - name: IndexNow で更新を通知
+        if: success() && steps.plan.outputs.command == 'sync' && github.event.inputs.dry_run != 'true' && vars.INDEXNOW_KEY != ''
+        continue-on-error: true
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          INDEXNOW_KEY: ${{ vars.INDEXNOW_KEY }}
+        run: python av_hub.py indexnow
+
+      - name: 画像と投稿文を保存（Artifacts からダウンロード可）
+        if: always() && steps.plan.outputs.command == 'bluesky'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluesky-card
+          path: out/
+          if-no-files-found: ignore
+
+      # 任意: Secrets に DISCORD_WEBHOOK_URL を入れると、失敗時に通知する
+      - name: 失敗を Discord へ通知
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          COMMAND: ${{ steps.plan.outputs.command }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -n "$WEBHOOK" ]; then
+            curl -fsS -H "Content-Type: application/json" \
+              -d "{\"content\":\"AVハブ（$COMMAND）が失敗しました: $RUN_URL\"}" "$WEBHOOK" || true
+          fi
