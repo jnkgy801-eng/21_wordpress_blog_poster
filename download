@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+
+# 画像・投稿文の出力先（av_hub.py bluesky が作る）
+out/
+
+# 秘密情報は GitHub の Secrets に入れる。ファイルには置かない
+.env
